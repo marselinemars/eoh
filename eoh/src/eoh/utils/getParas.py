@@ -38,6 +38,10 @@ class Paras():
         self.exp_continue_id = 0
         self.exp_continue_path = "./results/pops/population_generation_0.json"
         self.exp_n_proc = 1
+        self.exp_log_events = False
+        self.exp_events_path = "./results/events.jsonl"
+        self.exp_run_id = None
+        self.exp_log_event_code = False
         
         #####################
         ###  Evaluation settings  ###

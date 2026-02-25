@@ -4,6 +4,7 @@ import random
 import time
 
 from .eoh_interface_EC import InterfaceEC
+from ...utils.event_logger import EventLogger, resolve_events_path, build_run_meta, code_info
 # main class for eoh
 class EOH:
 
@@ -11,6 +12,8 @@ class EOH:
     def __init__(self, paras, problem, select, manage, **kwargs):
 
         self.prob = problem
+        self.paras = paras
+        self.problem_name = paras.problem if isinstance(paras.problem, str) else type(problem).__name__
         self.select = select
         self.manage = manage
         
@@ -57,6 +60,11 @@ class EOH:
         self.timeout = paras.eva_timeout
 
         self.use_numba = paras.eva_numba_decorator
+        self.log_events = getattr(paras, "exp_log_events", False)
+        self.events_path = resolve_events_path(self.output_path, getattr(paras, "exp_events_path", "./results/events.jsonl"))
+        self.run_id = getattr(paras, "exp_run_id", None)
+        self.log_event_code = getattr(paras, "exp_log_event_code", False)
+        self.event_logger = EventLogger(self.log_events, self.events_path, self.run_id)
 
         print("- EoH parameters loaded -")
 
@@ -94,10 +102,71 @@ class EOH:
 
         # initialization
         population = []
+        best_so_far = None
+        eval_count = 0
+        method_name = "eoh"
+
+        def _to_float(val):
+            try:
+                return float(val)
+            except Exception:
+                return None
+
+        def log_individuals(individuals, event_name, generation=None, operator=None, parents_list=None):
+            nonlocal eval_count, best_so_far
+            if not self.event_logger.enabled:
+                return
+            for idx, ind in enumerate(individuals):
+                if ind is None or ind.get("objective") is None:
+                    continue
+                obj = _to_float(ind.get("objective"))
+                if obj is None:
+                    continue
+                eval_count += 1
+                if best_so_far is None or obj < best_so_far:
+                    best_so_far = obj
+                record = {
+                    "event": event_name,
+                    "method": method_name,
+                    "problem": self.problem_name,
+                    "objective": obj,
+                    "best_so_far": best_so_far,
+                    "eval_count": eval_count,
+                }
+                if generation is not None:
+                    record["generation"] = generation
+                if operator is not None:
+                    record["operator"] = operator
+                record.update(code_info(ind.get("code"), self.log_event_code))
+                if parents_list is not None and idx < len(parents_list):
+                    parents = parents_list[idx]
+                    if parents:
+                        parent_objs = []
+                        parent_hashes = []
+                        for p in parents:
+                            if p is None:
+                                continue
+                            pobj = _to_float(p.get("objective"))
+                            if pobj is not None:
+                                parent_objs.append(pobj)
+                            parent_hash = code_info(p.get("code"), False).get("code_hash")
+                            if parent_hash is not None:
+                                parent_hashes.append(parent_hash)
+                        record["parent_objectives"] = parent_objs
+                        record["parent_hashes"] = parent_hashes
+                        record["n_parents"] = len(parents)
+                self.event_logger.log(record)
+
+        if self.event_logger.enabled:
+            meta = build_run_meta(self.paras, method_name, self.problem_name, self.events_path)
+            meta["log_event_code"] = self.log_event_code
+            self.event_logger.log({"event": "run_start", "meta": meta})
+
         if self.use_seed:
             with open(self.seed_path) as file:
                 data = json.load(file)
             population = interface_ec.population_generation_seed(data,self.exp_n_proc)
+            log_individuals(population, "seed_init", generation=0, operator="seed")
             filename = self.output_path + "/results/pops/population_generation_0.json"
             with open(filename, 'w') as f:
                 json.dump(population, f, indent=5)
@@ -110,10 +179,12 @@ class EOH:
                 for individual in data:
                     population.append(individual)
                 print("initial population has been loaded!")
+                log_individuals(population, "load_init", generation=self.load_pop_id, operator="load")
                 n_start = self.load_pop_id
             else:  # create new population
                 print("creating initial population:")
                 population = interface_ec.population_generation()
+                log_individuals(population, "init_eval", generation=0, operator="i1")
                 population = self.manage.population_management(population, self.pop_size)
 
                 # print(len(population))
@@ -149,6 +220,7 @@ class EOH:
                 op_w = self.operator_weights[i]
                 if (np.random.rand() < op_w):
                     parents, offsprings = interface_ec.get_algorithm(population, op)
+                    log_individuals(offsprings, "offspring_eval", generation=pop + 1, operator=op, parents_list=parents)
                 self.add2pop(population, offsprings)  # Check duplication, and add the new offspring
                 for off in offsprings:
                     print(" Obj: ", off['objective'], end="|")
@@ -176,6 +248,16 @@ class EOH:
             with open(filename, 'w') as f:
                 json.dump(population[0], f, indent=5)
 
+            if self.event_logger.enabled and len(population) > 0:
+                self.event_logger.log({
+                    "event": "generation_end",
+                    "method": method_name,
+                    "problem": self.problem_name,
+                    "generation": pop + 1,
+                    "population_best": _to_float(population[0].get("objective")),
+                    "best_so_far": best_so_far,
+                    "eval_count": eval_count,
+                })
 
             print(f"--- {pop + 1} of {self.n_pop} populations finished. Time Cost:  {((time.time()-time_start)/60):.1f} m")
             print("Pop Objs: ", end=" ")
@@ -183,3 +265,13 @@ class EOH:
                 print(str(population[i]['objective']) + " ", end="")
             print()
 
+        if self.event_logger.enabled:
+            self.event_logger.log({
+                "event": "run_end",
+                "method": method_name,
+                "problem": self.problem_name,
+                "best_so_far": best_so_far,
+                "eval_count": eval_count,
+                "elapsed_s": time.time() - time_start,
+            })
+            self.event_logger.close()
