@@ -49,7 +49,15 @@ class DXProposalBackend:
             "Propose one focused improvement.\n"
             "Output may include analysis text, but must include a valid Python function implementation."
         )
-        return dx_header + "\n\n" + base_prompt
+        ctx_text = ""
+        if isinstance(context, dict) and len(context) > 0:
+            safe_context = {
+                "operator": context.get("operator"),
+                "parent_trace_summary": context.get("parent_trace_summary"),
+                "recent_history": context.get("recent_history"),
+            }
+            ctx_text = "\n\nDX context (JSON):\n" + json.dumps(safe_context, ensure_ascii=True)
+        return dx_header + ctx_text + "\n\n" + base_prompt
 
     def parse_response(self, response):
         payload = _extract_first_json_object(response)

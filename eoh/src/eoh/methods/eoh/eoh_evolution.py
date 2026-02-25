@@ -173,10 +173,10 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         return [code_all, algorithm]
 
 
-    def i1(self):
+    def i1(self, dx_context=None):
 
         base_prompt = self.get_prompt_i1()
-        prompt_content = self.proposal_backend.build_prompt("i1", base_prompt, {"parents": None})
+        prompt_content = self.proposal_backend.build_prompt("i1", base_prompt, dx_context or {"parents": None})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ i1 ] : \n", prompt_content )
@@ -193,10 +193,10 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def e1(self,parents):
+    def e1(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_e1(parents)
-        prompt_content = self.proposal_backend.build_prompt("e1", base_prompt, {"parents": parents})
+        prompt_content = self.proposal_backend.build_prompt("e1", base_prompt, dx_context or {"parents": parents})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ e1 ] : \n", prompt_content )
@@ -213,10 +213,10 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def e2(self,parents):
+    def e2(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_e2(parents)
-        prompt_content = self.proposal_backend.build_prompt("e2", base_prompt, {"parents": parents})
+        prompt_content = self.proposal_backend.build_prompt("e2", base_prompt, dx_context or {"parents": parents})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ e2 ] : \n", prompt_content )
@@ -233,10 +233,10 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def m1(self,parents):
+    def m1(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_m1(parents)
-        prompt_content = self.proposal_backend.build_prompt("m1", base_prompt, {"parents": [parents]})
+        prompt_content = self.proposal_backend.build_prompt("m1", base_prompt, dx_context or {"parents": [parents]})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m1 ] : \n", prompt_content )
@@ -253,10 +253,10 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def m2(self,parents):
+    def m2(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_m2(parents)
-        prompt_content = self.proposal_backend.build_prompt("m2", base_prompt, {"parents": [parents]})
+        prompt_content = self.proposal_backend.build_prompt("m2", base_prompt, dx_context or {"parents": [parents]})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m2 ] : \n", prompt_content )
@@ -273,10 +273,10 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def m3(self,parents):
+    def m3(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_m3(parents)
-        prompt_content = self.proposal_backend.build_prompt("m3", base_prompt, {"parents": [parents]})
+        prompt_content = self.proposal_backend.build_prompt("m3", base_prompt, dx_context or {"parents": [parents]})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m3 ] : \n", prompt_content )

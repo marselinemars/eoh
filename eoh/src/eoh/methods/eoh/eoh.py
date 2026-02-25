@@ -61,6 +61,7 @@ class EOH:
 
         self.use_numba = paras.eva_numba_decorator
         self.proposal_mode = getattr(paras, "proposal_mode", "eoh")
+        self.dx_history_k = getattr(paras, "dx_history_k", 5)
         self.log_events = getattr(paras, "exp_log_events", False)
         self.events_path = resolve_events_path(self.output_path, getattr(paras, "exp_events_path", "./results/events.jsonl"))
         self.run_id = getattr(paras, "exp_run_id", None)
@@ -98,7 +99,7 @@ class EOH:
         # interface for ec operators
         interface_ec = InterfaceEC(self.pop_size, self.m, self.api_endpoint, self.api_key, self.llm_model, self.use_local_llm, self.llm_local_url,
                                    self.debug_mode, interface_prob, select=self.select,n_p=self.exp_n_proc,
-                                   timeout = self.timeout, use_numba=self.use_numba, proposal_mode=self.proposal_mode
+                                   timeout = self.timeout, use_numba=self.use_numba, proposal_mode=self.proposal_mode, dx_history_k=self.dx_history_k
                                    )
 
         # initialization
@@ -140,11 +141,16 @@ class EOH:
                 if operator is not None:
                     record["operator"] = operator
                 record.update(code_info(ind.get("code"), self.log_event_code))
+                if ind.get("trace_summary") is not None:
+                    record["trace_summary"] = ind.get("trace_summary")
+                if ind.get("other_inf") is not None:
+                    record["evaluation_info"] = ind.get("other_inf")
                 if parents_list is not None and idx < len(parents_list):
                     parents = parents_list[idx]
                     if parents:
                         parent_objs = []
                         parent_hashes = []
+                        parent_traces = []
                         for p in parents:
                             if p is None:
                                 continue
@@ -154,8 +160,12 @@ class EOH:
                             parent_hash = code_info(p.get("code"), False).get("code_hash")
                             if parent_hash is not None:
                                 parent_hashes.append(parent_hash)
+                            if p.get("trace_summary") is not None:
+                                parent_traces.append(p.get("trace_summary"))
                         record["parent_objectives"] = parent_objs
                         record["parent_hashes"] = parent_hashes
+                        if len(parent_traces) > 0:
+                            record["parent_trace_summaries"] = parent_traces
                         record["n_parents"] = len(parents)
                 self.event_logger.log(record)
 
