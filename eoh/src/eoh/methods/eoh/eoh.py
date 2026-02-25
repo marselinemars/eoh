@@ -213,6 +213,11 @@ class EOH:
                 population = interface_ec.population_generation()
                 log_individuals(population, "init_eval", generation=0, operator="i1")
                 population = self.manage.population_management(population, self.pop_size)
+                if len(population) == 0:
+                    raise RuntimeError(
+                        "Initial population is empty. All proposals failed evaluation. "
+                        "Check proposal_mode prompts/parsing and evaluator compatibility."
+                    )
 
                 # print(len(population))
                 # if len(population)<self.pop_size:
@@ -272,8 +277,9 @@ class EOH:
 
             # Save the best one to a file
             filename = self.output_path + "/results/pops_best/population_generation_" + str(pop + 1) + ".json"
-            with open(filename, 'w') as f:
-                json.dump(population[0], f, indent=5)
+            if len(population) > 0:
+                with open(filename, 'w') as f:
+                    json.dump(population[0], f, indent=5)
 
             if self.event_logger.enabled and len(population) > 0:
                 self.event_logger.log({

@@ -140,6 +140,13 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             return None
         return code[0], algorithm[0]
 
+    def _looks_like_complete_return(self, code):
+        if not isinstance(code, str):
+            return False
+        # JSON-path proposals usually return complete function text.
+        # Legacy regex path often truncates at keyword `return`.
+        return bool(re.search(r"return\s+[^\s].*", code))
+
 
     def _get_alg(self,prompt_content):
 
@@ -201,7 +208,12 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             raise ValueError("Could not parse algorithm or code from LLM response.")
         code, algorithm = parsed
 
-        code_all = code+" "+", ".join(s for s in self.prompt_func_outputs) 
+        # Keep legacy behavior for regex-truncated code; avoid corrupting
+        # JSON-path code that already contains a full return expression.
+        if proposal_meta.get("used_json") and self._looks_like_complete_return(code):
+            code_all = code
+        else:
+            code_all = code + " " + ", ".join(s for s in self.prompt_func_outputs)
 
         self.last_proposal_info = proposal_meta
         return [code_all, algorithm, proposal_meta]
