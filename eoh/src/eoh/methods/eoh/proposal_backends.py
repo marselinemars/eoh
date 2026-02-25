@@ -79,6 +79,7 @@ class DXProposalBackend:
                 "operator": context.get("operator"),
                 "parent_trace_summary": context.get("parent_trace_summary"),
                 "recent_history": context.get("recent_history"),
+                "observer_summary": context.get("observer_summary"),
             }
             ctx_text = "\n\nDX context (JSON):\n" + json.dumps(safe_context, ensure_ascii=True)
         schema_text = "\n\nRequired JSON schema:\n" + json.dumps(schema, ensure_ascii=True)

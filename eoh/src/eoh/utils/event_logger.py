@@ -57,6 +57,8 @@ def build_run_meta(paras, method_name, problem_name, events_path):
         "llm_model": getattr(paras, "llm_model", None),
         "proposal_mode": getattr(paras, "proposal_mode", None),
         "dx_history_k": getattr(paras, "dx_history_k", None),
+        "dx_call_mode": getattr(paras, "dx_call_mode", None),
+        "dx_observer_threshold_chars": getattr(paras, "dx_observer_threshold_chars", None),
     }
     return meta
 

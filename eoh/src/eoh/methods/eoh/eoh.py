@@ -62,6 +62,8 @@ class EOH:
         self.use_numba = paras.eva_numba_decorator
         self.proposal_mode = getattr(paras, "proposal_mode", "eoh")
         self.dx_history_k = getattr(paras, "dx_history_k", 5)
+        self.dx_call_mode = getattr(paras, "dx_call_mode", "single")
+        self.dx_observer_threshold_chars = getattr(paras, "dx_observer_threshold_chars", 2200)
         self.log_events = getattr(paras, "exp_log_events", False)
         self.events_path = resolve_events_path(self.output_path, getattr(paras, "exp_events_path", "./results/events.jsonl"))
         self.run_id = getattr(paras, "exp_run_id", None)
@@ -100,7 +102,8 @@ class EOH:
         # interface for ec operators
         interface_ec = InterfaceEC(self.pop_size, self.m, self.api_endpoint, self.api_key, self.llm_model, self.use_local_llm, self.llm_local_url,
                                    self.debug_mode, interface_prob, select=self.select,n_p=self.exp_n_proc,
-                                   timeout = self.timeout, use_numba=self.use_numba, proposal_mode=self.proposal_mode, dx_history_k=self.dx_history_k
+                                   timeout = self.timeout, use_numba=self.use_numba, proposal_mode=self.proposal_mode, dx_history_k=self.dx_history_k,
+                                   dx_call_mode=self.dx_call_mode, dx_observer_threshold_chars=self.dx_observer_threshold_chars
                                    )
 
         # initialization
@@ -153,12 +156,20 @@ class EOH:
                         "parse_error": ind["proposal_info"].get("parse_error"),
                         "fallback_used": ind["proposal_info"].get("fallback_used"),
                         "retry_count": ind["proposal_info"].get("retry_count"),
+                        "observer_used": ind["proposal_info"].get("observer_used"),
+                        "observer_parse_error": ind["proposal_info"].get("observer_parse_error"),
                     }
                     if ind["proposal_info"].get("parsed_json") is not None:
                         proposal_info["parsed_json"] = ind["proposal_info"].get("parsed_json")
+                    if ind["proposal_info"].get("observer_summary") is not None:
+                        proposal_info["observer_summary"] = ind["proposal_info"].get("observer_summary")
                     if self.log_llm_raw:
                         proposal_info["prompt"] = ind["proposal_info"].get("prompt")
                         proposal_info["raw_response"] = ind["proposal_info"].get("raw_response")
+                        if ind["proposal_info"].get("observer_prompt") is not None:
+                            proposal_info["observer_prompt"] = ind["proposal_info"].get("observer_prompt")
+                        if ind["proposal_info"].get("observer_raw_response") is not None:
+                            proposal_info["observer_raw_response"] = ind["proposal_info"].get("observer_raw_response")
                     record["proposal_info"] = proposal_info
                 if parents_list is not None and idx < len(parents_list):
                     parents = parents_list[idx]

@@ -45,6 +45,8 @@ class Paras():
         self.exp_log_llm_raw = False
         self.proposal_mode = "eoh"  # ['eoh', 'dx']
         self.dx_history_k = 5
+        self.dx_call_mode = "single"  # ['single', 'observer_planner', 'auto']
+        self.dx_observer_threshold_chars = 2200
         
         #####################
         ###  Evaluation settings  ###

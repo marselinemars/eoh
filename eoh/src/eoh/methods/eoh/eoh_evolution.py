@@ -1,3 +1,4 @@
+import json
 import re
 import time
 from ...llm.interface_LLM import InterfaceLLM
@@ -32,10 +33,98 @@ class Evolution():
         self.debug_mode = debug_mode # close prompt checking
         self.proposal_mode = kwargs.get("proposal_mode", "eoh")
         self.proposal_backend = get_proposal_backend(self.proposal_mode)
+        self.dx_call_mode = kwargs.get("dx_call_mode", "single")
+        self.dx_observer_threshold_chars = kwargs.get("dx_observer_threshold_chars", 2200)
         self.last_proposal_info = None
 
 
         self.interface_llm = InterfaceLLM(self.api_endpoint, self.api_key, self.model_LLM,llm_use_local,llm_local_url, self.debug_mode)
+
+    def _safe_json_load(self, text):
+        if not isinstance(text, str):
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            return json.loads(text[start : end + 1])
+        except Exception:
+            return None
+
+    def _need_observer_precall(self, dx_context):
+        if self.proposal_mode != "dx":
+            return False
+        if self.dx_call_mode == "single":
+            return False
+        if not isinstance(dx_context, dict):
+            return False
+
+        if self.dx_call_mode == "observer_planner":
+            return True
+
+        # auto mode
+        has_signal = bool(dx_context.get("parent_trace_summary")) or bool(dx_context.get("recent_history"))
+        if not has_signal:
+            return False
+        try:
+            context_chars = len(json.dumps(dx_context, ensure_ascii=True))
+        except Exception:
+            context_chars = 0
+        return context_chars >= int(self.dx_observer_threshold_chars)
+
+    def _observer_prompt(self, dx_context):
+        return (
+            "You are the Observer agent.\n"
+            "Compress the diagnostic context into compact JSON for a planner.\n"
+            "Output JSON only with keys: observation_summary, anomalies, regime_ranking.\n\n"
+            "Input context:\n"
+            + json.dumps(dx_context, ensure_ascii=True)
+        )
+
+    def _run_observer_precall(self, dx_context):
+        info = {
+            "observer_used": False,
+            "observer_parse_error": None,
+            "observer_summary": None,
+            "observer_prompt": None,
+            "observer_raw_response": None,
+        }
+        if not self._need_observer_precall(dx_context):
+            return dx_context, info
+
+        observer_prompt = self._observer_prompt(dx_context)
+        observer_response = self.interface_llm.get_response(observer_prompt)
+        observer_json = self._safe_json_load(observer_response)
+
+        info["observer_used"] = True
+        info["observer_prompt"] = observer_prompt
+        info["observer_raw_response"] = observer_response
+
+        if isinstance(observer_json, dict):
+            compact = {
+                "observation_summary": observer_json.get("observation_summary"),
+                "anomalies": observer_json.get("anomalies"),
+                "regime_ranking": observer_json.get("regime_ranking"),
+            }
+            info["observer_summary"] = compact
+            new_context = dict(dx_context) if isinstance(dx_context, dict) else {}
+            new_context["observer_summary"] = compact
+            return new_context, info
+
+        info["observer_parse_error"] = "invalid_observer_json"
+        # Keep original context if observer output is invalid.
+        return dx_context, info
+
+    def _prepare_prompt(self, operator, base_prompt, dx_context):
+        effective_context, observer_info = self._run_observer_precall(dx_context)
+        prompt_content = self.proposal_backend.build_prompt(operator, base_prompt, effective_context)
+        return prompt_content, observer_info
 
     def get_prompt_i1(self):
         
@@ -148,7 +237,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         return bool(re.search(r"return\s+[^\s].*", code))
 
 
-    def _get_alg(self,prompt_content):
+    def _get_alg(self,prompt_content, observer_info=None):
 
         response = self.interface_llm.get_response(prompt_content)
         proposal_meta = {
@@ -160,7 +249,14 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             "parsed_json": None,
             "fallback_used": False,
             "retry_count": 0,
+            "observer_used": False,
+            "observer_parse_error": None,
+            "observer_summary": None,
+            "observer_prompt": None,
+            "observer_raw_response": None,
         }
+        if isinstance(observer_info, dict):
+            proposal_meta.update(observer_info)
 
         parsed = None
         if self.proposal_mode == "dx":
@@ -222,14 +318,14 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def i1(self, dx_context=None):
 
         base_prompt = self.get_prompt_i1()
-        prompt_content = self.proposal_backend.build_prompt("i1", base_prompt, dx_context or {"parents": None})
+        prompt_content, observer_info = self._prepare_prompt("i1", base_prompt, dx_context or {"parents": None})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ i1 ] : \n", prompt_content )
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content, observer_info=observer_info)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -242,14 +338,14 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def e1(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_e1(parents)
-        prompt_content = self.proposal_backend.build_prompt("e1", base_prompt, dx_context or {"parents": parents})
+        prompt_content, observer_info = self._prepare_prompt("e1", base_prompt, dx_context or {"parents": parents})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ e1 ] : \n", prompt_content )
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content, observer_info=observer_info)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -262,14 +358,14 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def e2(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_e2(parents)
-        prompt_content = self.proposal_backend.build_prompt("e2", base_prompt, dx_context or {"parents": parents})
+        prompt_content, observer_info = self._prepare_prompt("e2", base_prompt, dx_context or {"parents": parents})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ e2 ] : \n", prompt_content )
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content, observer_info=observer_info)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -282,14 +378,14 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def m1(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_m1(parents)
-        prompt_content = self.proposal_backend.build_prompt("m1", base_prompt, dx_context or {"parents": [parents]})
+        prompt_content, observer_info = self._prepare_prompt("m1", base_prompt, dx_context or {"parents": [parents]})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m1 ] : \n", prompt_content )
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content, observer_info=observer_info)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -302,14 +398,14 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def m2(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_m2(parents)
-        prompt_content = self.proposal_backend.build_prompt("m2", base_prompt, dx_context or {"parents": [parents]})
+        prompt_content, observer_info = self._prepare_prompt("m2", base_prompt, dx_context or {"parents": [parents]})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m2 ] : \n", prompt_content )
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content, observer_info=observer_info)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -322,14 +418,14 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def m3(self,parents, dx_context=None):
       
         base_prompt = self.get_prompt_m3(parents)
-        prompt_content = self.proposal_backend.build_prompt("m3", base_prompt, dx_context or {"parents": [parents]})
+        prompt_content, observer_info = self._prepare_prompt("m3", base_prompt, dx_context or {"parents": [parents]})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m3 ] : \n", prompt_content )
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content, observer_info=observer_info)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
