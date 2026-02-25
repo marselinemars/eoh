@@ -64,6 +64,7 @@ class EOH:
         self.dx_history_k = getattr(paras, "dx_history_k", 5)
         self.dx_call_mode = getattr(paras, "dx_call_mode", "single")
         self.dx_observer_threshold_chars = getattr(paras, "dx_observer_threshold_chars", 2200)
+        self.dx_max_retries = getattr(paras, "dx_max_retries", 2)
         self.log_events = getattr(paras, "exp_log_events", False)
         self.events_path = resolve_events_path(self.output_path, getattr(paras, "exp_events_path", "./results/events.jsonl"))
         self.run_id = getattr(paras, "exp_run_id", None)
@@ -103,7 +104,8 @@ class EOH:
         interface_ec = InterfaceEC(self.pop_size, self.m, self.api_endpoint, self.api_key, self.llm_model, self.use_local_llm, self.llm_local_url,
                                    self.debug_mode, interface_prob, select=self.select,n_p=self.exp_n_proc,
                                    timeout = self.timeout, use_numba=self.use_numba, proposal_mode=self.proposal_mode, dx_history_k=self.dx_history_k,
-                                   dx_call_mode=self.dx_call_mode, dx_observer_threshold_chars=self.dx_observer_threshold_chars
+                                   dx_call_mode=self.dx_call_mode, dx_observer_threshold_chars=self.dx_observer_threshold_chars,
+                                   dx_max_retries=self.dx_max_retries, output_path=self.output_path, run_id=self.event_logger.run_id
                                    )
 
         # initialization
@@ -160,11 +162,18 @@ class EOH:
                         "retry_count": ind["proposal_info"].get("retry_count"),
                         "observer_used": ind["proposal_info"].get("observer_used"),
                         "observer_parse_error": ind["proposal_info"].get("observer_parse_error"),
+                        "action_applied": ind["proposal_info"].get("action_applied"),
+                        "patch_applied": ind["proposal_info"].get("patch_applied"),
+                        "observer_event_id": ind["proposal_info"].get("observer_event_id"),
+                        "code_hash_before": ind["proposal_info"].get("code_hash_before"),
+                        "code_hash_after": ind["proposal_info"].get("code_hash_after"),
                     }
                     if ind["proposal_info"].get("parsed_json") is not None:
                         proposal_info["parsed_json"] = ind["proposal_info"].get("parsed_json")
                     if ind["proposal_info"].get("observer_summary") is not None:
                         proposal_info["observer_summary"] = ind["proposal_info"].get("observer_summary")
+                    if ind["proposal_info"].get("planner_event_ids") is not None:
+                        proposal_info["planner_event_ids"] = ind["proposal_info"].get("planner_event_ids")
                     if self.log_llm_raw:
                         proposal_info["prompt"] = ind["proposal_info"].get("prompt")
                         proposal_info["raw_response"] = ind["proposal_info"].get("raw_response")

@@ -14,7 +14,7 @@ class Probs():
             print("- Prob "+paras.problem+" loaded ")
         elif paras.problem == "bp_online":
             from .optimization.bp_online import run
-            self.prob = run.BPONLINE()
+            self.prob = run.BPONLINE(paras=paras)
             print("- Prob "+paras.problem+" loaded ")
         else:
             print("problem "+paras.problem+" not found!")

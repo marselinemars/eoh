@@ -31,20 +31,92 @@ class InterfaceEC():
         self.timeout = timeout
         self.use_numba = use_numba
 
+    def _default_score_code(self):
+        return (
+            "import numpy as np\n\n"
+            "def score(item, bins):\n"
+            "    remaining = bins - item\n"
+            "    scores = -remaining\n"
+            "    return scores\n"
+        )
+
     def _code_hash(self, code):
         if not isinstance(code, str):
             return None
         return hashlib.sha1(code.encode("utf-8", errors="ignore")).hexdigest()
+
+    def _current_metrics_from_trace(self, trace_summary):
+        if not isinstance(trace_summary, dict):
+            return {}
+        overall = trace_summary.get("overall")
+        if not isinstance(overall, dict):
+            overall = {}
+        keys = [
+            "bins_used_mean",
+            "near_miss_mean",
+            "tie_events_mean",
+            "n_items_mean",
+            "late_large_failures_mean",
+            "utilization_mean_mean",
+            "fill_std_mean",
+        ]
+        out = {}
+        for key in keys:
+            if key in overall:
+                try:
+                    out[key] = float(overall[key])
+                except Exception:
+                    pass
+        return out
+
+    def _degeneracy_flags(self, metrics, n_regimes):
+        flags = []
+        tie = float(metrics.get("tie_events_mean", 0.0) or 0.0)
+        n_items = float(metrics.get("n_items_mean", 0.0) or 0.0)
+        if n_items > 0:
+            tie_rate = tie / n_items
+            if tie_rate > 0.25:
+                flags.append("tie_rate_high")
+            if tie > 0.9 * n_items:
+                flags.append("score_flat_suspected")
+        if n_regimes == 1:
+            flags.append("single_regime_only")
+        return flags
+
+    def _priority(self, metrics, flags):
+        if "tie_rate_high" in flags or "score_flat_suspected" in flags:
+            return "reduce ties / increase score differentiation"
+        ordered = [
+            "bins_used_mean",
+            "late_large_failures_mean",
+            "near_miss_mean",
+            "utilization_mean_mean",
+            "fill_std_mean",
+        ]
+        for key in ordered:
+            if key in metrics:
+                return f"improve {key}"
+        return "improve bins_used_mean"
 
     def _build_dx_context(self, parents, operator):
         if self.proposal_mode != "dx":
             return {}
 
         parent_context = []
+        best_parent = None
+        best_obj = None
         if parents:
             for p in parents:
                 if p is None:
                     continue
+                pobj = p.get("objective")
+                try:
+                    pobj_float = float(pobj)
+                except Exception:
+                    pobj_float = None
+                if pobj_float is not None and (best_obj is None or pobj_float < best_obj):
+                    best_obj = pobj_float
+                    best_parent = p
                 parent_context.append(
                     {
                         "objective": p.get("objective"),
@@ -53,11 +125,48 @@ class InterfaceEC():
                     }
                 )
 
+        current_code = self._default_score_code()
+        current_algorithm = "{baseline: score bins by remaining capacity after placement}"
+        current_trace = None
+        if best_parent is not None:
+            if isinstance(best_parent.get("code"), str) and len(best_parent.get("code").strip()) > 0:
+                current_code = best_parent.get("code")
+            if isinstance(best_parent.get("algorithm"), str):
+                current_algorithm = best_parent.get("algorithm")
+            current_trace = best_parent.get("trace_summary")
+
+        current_metrics = self._current_metrics_from_trace(current_trace)
+        n_regimes = 0
+        if isinstance(current_trace, dict):
+            try:
+                n_regimes = int(current_trace.get("n_regimes", 0))
+            except Exception:
+                n_regimes = 0
+        flags = self._degeneracy_flags(current_metrics, n_regimes)
+        top_metric = None
+        for metric_name in [
+            "bins_used_mean",
+            "late_large_failures_mean",
+            "near_miss_mean",
+            "utilization_mean_mean",
+            "fill_std_mean",
+        ]:
+            if metric_name in current_metrics:
+                top_metric = metric_name
+                break
+
         recent_history = self.dx_history[-self.dx_history_k :] if self.dx_history_k > 0 else []
         return {
             "operator": operator,
             "parent_trace_summary": parent_context,
             "recent_history": recent_history,
+            "current_code": current_code,
+            "current_code_hash": self._code_hash(current_code),
+            "current_algorithm": current_algorithm,
+            "current_metrics": current_metrics,
+            "degeneracy_flags": flags,
+            "top_metric": top_metric,
+            "priority": self._priority(current_metrics, flags),
         }
 
     def _evaluate_candidate(self, code):
@@ -199,12 +308,12 @@ class InterfaceEC():
         else:
             print(f"Evolution operator [{operator}] has not been implemented ! \n") 
 
-        return parents, offspring
+        return parents, offspring, dx_context
 
     def get_offspring(self, pop, operator):
 
         try:
-            p, offspring = self._get_alg(pop, operator)
+            p, offspring, dx_context = self._get_alg(pop, operator)
             
             if self.use_numba:
                 
@@ -227,7 +336,7 @@ class InterfaceEC():
                 if self.debug:
                     print("duplicated code, wait 1 second and retrying ... ")
                     
-                p, offspring = self._get_alg(pop, operator)
+                p, offspring, dx_context = self._get_alg(pop, operator)
 
                 if self.use_numba:
                     # Regular expression pattern to match function definitions
@@ -274,6 +383,9 @@ class InterfaceEC():
                     "proposal_parse_error": (offspring.get("proposal_info") or {}).get("parse_error"),
                     "proposal_used_json": (offspring.get("proposal_info") or {}).get("used_json"),
                     "proposal_fallback_used": (offspring.get("proposal_info") or {}).get("fallback_used"),
+                    "degeneracy_flags": dx_context.get("degeneracy_flags") if isinstance(dx_context, dict) else None,
+                    "priority": dx_context.get("priority") if isinstance(dx_context, dict) else None,
+                    "top_metric": dx_context.get("top_metric") if isinstance(dx_context, dict) else None,
                 }
 
                 if self.proposal_mode == "dx":

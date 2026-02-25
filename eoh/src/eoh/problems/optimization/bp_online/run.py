@@ -7,10 +7,63 @@ import warnings
 import sys
 
 class BPONLINE():
-    def __init__(self):
+    def __init__(self, paras=None):
         getdate = GetData()
         self.instances, self.lb = getdate.get_instances()
+        self._maybe_add_synthetic_regimes(paras)
         self.prompts = GetPrompts()
+
+    def _clone_instance(self, base_instance, new_items):
+        return {
+            "capacity": int(base_instance["capacity"]),
+            "num_items": int(base_instance["num_items"]),
+            "items": [int(x) for x in new_items],
+        }
+
+    def _build_uniform_items(self, capacity, n_items, seed):
+        rng = np.random.default_rng(seed)
+        lo = max(1, int(0.2 * capacity))
+        hi = max(lo + 1, int(0.8 * capacity))
+        return rng.integers(lo, hi + 1, size=n_items)
+
+    def _build_heavy_tail_items(self, capacity, n_items, seed):
+        rng = np.random.default_rng(seed)
+        mask_large = rng.random(n_items) < 0.15
+        small = rng.integers(1, max(2, int(0.3 * capacity)) + 1, size=n_items)
+        large = rng.integers(max(2, int(0.65 * capacity)), capacity + 1, size=n_items)
+        return np.where(mask_large, large, small)
+
+    def _maybe_add_synthetic_regimes(self, paras):
+        flag = None
+        if paras is not None:
+            flag = getattr(paras, "bp_add_synthetic_regimes", None)
+            if flag is None and getattr(paras, "proposal_mode", "eoh") == "dx":
+                flag = True
+        if flag is None:
+            flag = False
+        if not flag:
+            return
+        if len(self.instances) != 1:
+            return
+
+        base_name = list(self.instances.keys())[0]
+        base_dataset = self.instances[base_name]
+        uniform_name = "Uniform 5k"
+        heavy_name = "HeavyTail 5k"
+        uniform_dataset = {}
+        heavy_dataset = {}
+
+        for idx, (inst_name, inst) in enumerate(base_dataset.items()):
+            capacity = int(inst["capacity"])
+            n_items = int(inst["num_items"])
+            uniform_items = self._build_uniform_items(capacity, n_items, seed=3100 + idx)
+            heavy_items = self._build_heavy_tail_items(capacity, n_items, seed=9100 + idx)
+            uniform_dataset[inst_name] = self._clone_instance(inst, uniform_items)
+            heavy_dataset[inst_name] = self._clone_instance(inst, heavy_items)
+
+        self.instances[uniform_name] = uniform_dataset
+        self.instances[heavy_name] = heavy_dataset
+        self.lb = {name: self.l1_bound_dataset(dataset) for name, dataset in self.instances.items()}
 
     def get_valid_bin_indices(self,item: float, bins: np.ndarray) -> np.ndarray:
         """Returns indices of bins in which item can fit."""
@@ -107,6 +160,19 @@ class BPONLINE():
             out[f"{key}_p90"] = float(np.percentile(values, 90))
         return out
 
+    def _degeneracy_flags(self, stats, n_regimes):
+        flags = []
+        tie = float(stats.get("tie_events_mean", 0.0) or 0.0)
+        n_items = float(stats.get("n_items_mean", 0.0) or 0.0)
+        if n_items > 0:
+            if tie / n_items > 0.25:
+                flags.append("tie_rate_high")
+            if tie > 0.9 * n_items:
+                flags.append("score_flat_suspected")
+        if n_regimes == 1:
+            flags.append("single_regime_only")
+        return flags
+
 
     # @funsearch.run
     def evaluateGreedy(self,alg, return_trace=False) -> float:
@@ -180,6 +246,7 @@ class BPONLINE():
             "regimes": regime_summary,
             "overall": overall,
             "n_regimes": len(regime_summary),
+            "degeneracy_flags": self._degeneracy_flags(overall, len(regime_summary)),
         }
         return fitness, trace_summary
 
@@ -223,5 +290,4 @@ class BPONLINE():
         except Exception as e:
             #print("Error:", str(e))
             return None
-
 
