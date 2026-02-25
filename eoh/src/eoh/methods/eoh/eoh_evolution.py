@@ -1,6 +1,7 @@
 import re
 import time
 from ...llm.interface_LLM import InterfaceLLM
+from .proposal_backends import get_proposal_backend
 
 class Evolution():
 
@@ -29,6 +30,8 @@ class Evolution():
         self.api_key = api_key
         self.model_LLM = model_LLM
         self.debug_mode = debug_mode # close prompt checking
+        self.proposal_mode = kwargs.get("proposal_mode", "eoh")
+        self.proposal_backend = get_proposal_backend(self.proposal_mode)
 
 
         self.interface_llm = InterfaceLLM(self.api_endpoint, self.api_key, self.model_LLM,llm_use_local,llm_local_url, self.debug_mode)
@@ -118,10 +121,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         return prompt_content
 
 
-    def _get_alg(self,prompt_content):
-
-        response = self.interface_llm.get_response(prompt_content)
-
+    def _legacy_extract(self, response):
         algorithm = re.findall(r"\{(.*)\}", response, re.DOTALL)
         if len(algorithm) == 0:
             if 'python' in response:
@@ -135,32 +135,37 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         if len(code) == 0:
             code = re.findall(r"def.*return", response, re.DOTALL)
 
+        if len(algorithm) == 0 or len(code) == 0:
+            return None
+        return code[0], algorithm[0]
+
+
+    def _get_alg(self,prompt_content):
+
+        response = self.interface_llm.get_response(prompt_content)
+
+        parsed = self.proposal_backend.parse_response(response)
+        if parsed is None:
+            parsed = self._legacy_extract(response)
+
         n_retry = 1
-        while (len(algorithm) == 0 or len(code) == 0):
+        while parsed is None:
             if self.debug_mode:
                 print("Error: algorithm or code not identified, wait 1 seconds and retrying ... ")
 
             response = self.interface_llm.get_response(prompt_content)
-
-            algorithm = re.findall(r"\{(.*)\}", response, re.DOTALL)
-            if len(algorithm) == 0:
-                if 'python' in response:
-                    algorithm = re.findall(r'^.*?(?=python)', response,re.DOTALL)
-                elif 'import' in response:
-                    algorithm = re.findall(r'^.*?(?=import)', response,re.DOTALL)
-                else:
-                    algorithm = re.findall(r'^.*?(?=def)', response,re.DOTALL)
-
-            code = re.findall(r"import.*return", response, re.DOTALL)
-            if len(code) == 0:
-                code = re.findall(r"def.*return", response, re.DOTALL)
+            parsed = self.proposal_backend.parse_response(response)
+            if parsed is None:
+                parsed = self._legacy_extract(response)
                 
             if n_retry > 3:
                 break
             n_retry +=1
 
-        algorithm = algorithm[0]
-        code = code[0] 
+        if parsed is None:
+            # Keep old behavior: this will raise and be handled by caller.
+            raise ValueError("Could not parse algorithm or code from LLM response.")
+        code, algorithm = parsed
 
         code_all = code+" "+", ".join(s for s in self.prompt_func_outputs) 
 
@@ -170,7 +175,8 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
     def i1(self):
 
-        prompt_content = self.get_prompt_i1()
+        base_prompt = self.get_prompt_i1()
+        prompt_content = self.proposal_backend.build_prompt("i1", base_prompt, {"parents": None})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ i1 ] : \n", prompt_content )
@@ -189,7 +195,8 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     
     def e1(self,parents):
       
-        prompt_content = self.get_prompt_e1(parents)
+        base_prompt = self.get_prompt_e1(parents)
+        prompt_content = self.proposal_backend.build_prompt("e1", base_prompt, {"parents": parents})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ e1 ] : \n", prompt_content )
@@ -208,7 +215,8 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     
     def e2(self,parents):
       
-        prompt_content = self.get_prompt_e2(parents)
+        base_prompt = self.get_prompt_e2(parents)
+        prompt_content = self.proposal_backend.build_prompt("e2", base_prompt, {"parents": parents})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ e2 ] : \n", prompt_content )
@@ -227,7 +235,8 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     
     def m1(self,parents):
       
-        prompt_content = self.get_prompt_m1(parents)
+        base_prompt = self.get_prompt_m1(parents)
+        prompt_content = self.proposal_backend.build_prompt("m1", base_prompt, {"parents": [parents]})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m1 ] : \n", prompt_content )
@@ -246,7 +255,8 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     
     def m2(self,parents):
       
-        prompt_content = self.get_prompt_m2(parents)
+        base_prompt = self.get_prompt_m2(parents)
+        prompt_content = self.proposal_backend.build_prompt("m2", base_prompt, {"parents": [parents]})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m2 ] : \n", prompt_content )
@@ -265,7 +275,8 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     
     def m3(self,parents):
       
-        prompt_content = self.get_prompt_m3(parents)
+        base_prompt = self.get_prompt_m3(parents)
+        prompt_content = self.proposal_backend.build_prompt("m3", base_prompt, {"parents": [parents]})
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m3 ] : \n", prompt_content )

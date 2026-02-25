@@ -54,6 +54,8 @@ def build_run_meta(paras, method_name, problem_name, events_path):
         "llm_local_url": getattr(paras, "llm_local_url", None),
         "llm_api_endpoint": getattr(paras, "llm_api_endpoint", None),
         "llm_model": getattr(paras, "llm_model", None),
+        "proposal_mode": getattr(paras, "proposal_mode", None),
+        "dx_history_k": getattr(paras, "dx_history_k", None),
     }
     return meta
 

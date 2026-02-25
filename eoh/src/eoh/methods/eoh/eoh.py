@@ -60,6 +60,7 @@ class EOH:
         self.timeout = paras.eva_timeout
 
         self.use_numba = paras.eva_numba_decorator
+        self.proposal_mode = getattr(paras, "proposal_mode", "eoh")
         self.log_events = getattr(paras, "exp_log_events", False)
         self.events_path = resolve_events_path(self.output_path, getattr(paras, "exp_events_path", "./results/events.jsonl"))
         self.run_id = getattr(paras, "exp_run_id", None)
@@ -97,7 +98,7 @@ class EOH:
         # interface for ec operators
         interface_ec = InterfaceEC(self.pop_size, self.m, self.api_endpoint, self.api_key, self.llm_model, self.use_local_llm, self.llm_local_url,
                                    self.debug_mode, interface_prob, select=self.select,n_p=self.exp_n_proc,
-                                   timeout = self.timeout, use_numba=self.use_numba
+                                   timeout = self.timeout, use_numba=self.use_numba, proposal_mode=self.proposal_mode
                                    )
 
         # initialization
@@ -128,6 +129,7 @@ class EOH:
                 record = {
                     "event": event_name,
                     "method": method_name,
+                    "mode": self.proposal_mode,
                     "problem": self.problem_name,
                     "objective": obj,
                     "best_so_far": best_so_far,
@@ -252,6 +254,7 @@ class EOH:
                 self.event_logger.log({
                     "event": "generation_end",
                     "method": method_name,
+                    "mode": self.proposal_mode,
                     "problem": self.problem_name,
                     "generation": pop + 1,
                     "population_best": _to_float(population[0].get("objective")),
@@ -269,6 +272,7 @@ class EOH:
             self.event_logger.log({
                 "event": "run_end",
                 "method": method_name,
+                "mode": self.proposal_mode,
                 "problem": self.problem_name,
                 "best_so_far": best_so_far,
                 "eval_count": eval_count,
