@@ -110,6 +110,8 @@ class EOH:
         population = []
         best_so_far = None
         eval_count = 0
+        observer_calls = 0
+        planner_calls = 0
         method_name = "eoh"
 
         def _to_float(val):
@@ -195,6 +197,30 @@ class EOH:
                         record["n_parents"] = len(parents)
                 self.event_logger.log(record)
 
+        def collect_call_counts(individuals):
+            nonlocal observer_calls, planner_calls
+            obs = 0
+            plan = 0
+            for ind in individuals:
+                if not isinstance(ind, dict):
+                    continue
+                info = ind.get("proposal_info")
+                if not isinstance(info, dict):
+                    continue
+                retry_count = info.get("retry_count", 0)
+                try:
+                    retry_count = int(retry_count)
+                except Exception:
+                    retry_count = 0
+                if retry_count < 0:
+                    retry_count = 0
+                plan += 1 + retry_count
+                if bool(info.get("observer_used")):
+                    obs += 1
+            observer_calls += obs
+            planner_calls += plan
+            return obs, plan
+
         if self.event_logger.enabled:
             meta = build_run_meta(self.paras, method_name, self.problem_name, self.events_path)
             meta["log_event_code"] = self.log_event_code
@@ -222,6 +248,7 @@ class EOH:
             else:  # create new population
                 print("creating initial population:")
                 population = interface_ec.population_generation()
+                collect_call_counts(population)
                 log_individuals(population, "init_eval", generation=0, operator="i1")
                 population = self.manage.population_management(population, self.pop_size)
                 if len(population) == 0:
@@ -257,12 +284,19 @@ class EOH:
 
         for pop in range(n_start, self.n_pop):  
             #print(f" [{na + 1} / {self.pop_size}] ", end="|")         
+            generation_observer_calls = 0
+            generation_planner_calls = 0
             for i in range(n_op):
                 op = self.operators[i]
                 print(f" OP: {op}, [{i + 1} / {n_op}] ", end="|") 
                 op_w = self.operator_weights[i]
+                parents = None
+                offsprings = []
                 if (np.random.rand() < op_w):
                     parents, offsprings = interface_ec.get_algorithm(population, op)
+                    obs_i, plan_i = collect_call_counts(offsprings)
+                    generation_observer_calls += obs_i
+                    generation_planner_calls += plan_i
                     log_individuals(offsprings, "offspring_eval", generation=pop + 1, operator=op, parents_list=parents)
                 self.add2pop(population, offsprings)  # Check duplication, and add the new offspring
                 for off in offsprings:
@@ -302,6 +336,10 @@ class EOH:
                     "population_best": _to_float(population[0].get("objective")),
                     "best_so_far": best_so_far,
                     "eval_count": eval_count,
+                    "observer_calls": observer_calls,
+                    "planner_calls": planner_calls,
+                    "observer_calls_generation": generation_observer_calls,
+                    "planner_calls_generation": generation_planner_calls,
                 })
 
             print(f"--- {pop + 1} of {self.n_pop} populations finished. Time Cost:  {((time.time()-time_start)/60):.1f} m")
@@ -318,6 +356,8 @@ class EOH:
                 "problem": self.problem_name,
                 "best_so_far": best_so_far,
                 "eval_count": eval_count,
+                "observer_calls": observer_calls,
+                "planner_calls": planner_calls,
                 "elapsed_s": time.time() - time_start,
             })
             self.event_logger.close()
