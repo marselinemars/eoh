@@ -65,6 +65,7 @@ class EOH:
         self.dx_call_mode = getattr(paras, "dx_call_mode", "single")
         self.dx_observer_threshold_chars = getattr(paras, "dx_observer_threshold_chars", 2200)
         self.dx_max_retries = getattr(paras, "dx_max_retries", 2)
+        self.dx_artifacts_mode = getattr(paras, "dx_artifacts_mode", "compact")
         self.log_events = getattr(paras, "exp_log_events", False)
         self.events_path = resolve_events_path(self.output_path, getattr(paras, "exp_events_path", "./results/events.jsonl"))
         self.run_id = getattr(paras, "exp_run_id", None)
@@ -105,7 +106,8 @@ class EOH:
                                    self.debug_mode, interface_prob, select=self.select,n_p=self.exp_n_proc,
                                    timeout = self.timeout, use_numba=self.use_numba, proposal_mode=self.proposal_mode, dx_history_k=self.dx_history_k,
                                    dx_call_mode=self.dx_call_mode, dx_observer_threshold_chars=self.dx_observer_threshold_chars,
-                                   dx_max_retries=self.dx_max_retries, output_path=self.output_path, run_id=self.event_logger.run_id
+                                   dx_max_retries=self.dx_max_retries, dx_artifacts_mode=self.dx_artifacts_mode,
+                                   output_path=self.output_path, run_id=self.event_logger.run_id
                                    )
 
         # initialization

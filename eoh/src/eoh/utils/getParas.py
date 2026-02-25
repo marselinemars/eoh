@@ -48,6 +48,7 @@ class Paras():
         self.dx_call_mode = "single"  # ['single', 'observer_planner', 'auto']
         self.dx_observer_threshold_chars = 2200
         self.dx_max_retries = 2
+        self.dx_artifacts_mode = "compact"  # ['compact', 'full']
         self.bp_add_synthetic_regimes = None
         
         #####################

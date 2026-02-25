@@ -170,19 +170,29 @@ def sanity_check_score(code_text, n_trials=8, eps=1e-10):
 
 
 class DXArtifactLogger:
-    def __init__(self, results_root, run_id):
+    def __init__(self, results_root, run_id, mode="compact"):
         self.results_root = os.path.normpath(results_root)
         self.run_id = run_id
+        self.mode = mode if mode in ("compact", "full") else "compact"
         self._call_id = 0
-        self.prompts_dir = os.path.join(self.results_root, "prompts", self.run_id)
-        self.responses_dir = os.path.join(self.results_root, "responses", self.run_id)
-        self.json_dir = os.path.join(self.results_root, "json", self.run_id)
-        self.patches_dir = os.path.join(self.results_root, "patches", self.run_id)
-        self.log_path = os.path.join(self.results_root, "log.jsonl")
-        os.makedirs(self.prompts_dir, exist_ok=True)
-        os.makedirs(self.responses_dir, exist_ok=True)
-        os.makedirs(self.json_dir, exist_ok=True)
-        os.makedirs(self.patches_dir, exist_ok=True)
+        os.makedirs(self.results_root, exist_ok=True)
+
+        if self.mode == "full":
+            self.prompts_dir = os.path.join(self.results_root, "prompts", self.run_id)
+            self.responses_dir = os.path.join(self.results_root, "responses", self.run_id)
+            self.json_dir = os.path.join(self.results_root, "json", self.run_id)
+            self.patches_dir = os.path.join(self.results_root, "patches", self.run_id)
+            self.log_path = os.path.join(self.results_root, "log.jsonl")
+            os.makedirs(self.prompts_dir, exist_ok=True)
+            os.makedirs(self.responses_dir, exist_ok=True)
+            os.makedirs(self.json_dir, exist_ok=True)
+            os.makedirs(self.patches_dir, exist_ok=True)
+        else:
+            self.prompts_dir = None
+            self.responses_dir = None
+            self.json_dir = None
+            self.patches_dir = None
+            self.log_path = os.path.join(self.results_root, "dx_calls.jsonl")
 
     def log_call(
         self,
@@ -198,37 +208,63 @@ class DXArtifactLogger:
     ):
         event_id = self._call_id
         self._call_id += 1
-        base_name = f"{event_id}_{agent}"
-        prompt_path = os.path.join(self.prompts_dir, base_name + ".txt")
-        response_path = os.path.join(self.responses_dir, base_name + ".txt")
-        json_path = os.path.join(self.json_dir, base_name + ".json")
-        patch_path = os.path.join(self.patches_dir, base_name + ".patch")
-
-        with open(prompt_path, "w", encoding="utf-8") as fh:
-            fh.write(prompt_text if isinstance(prompt_text, str) else "")
-        with open(response_path, "w", encoding="utf-8") as fh:
-            fh.write(response_text if isinstance(response_text, str) else "")
-
         parsed_payload = parsed_json if parsed_json is not None else {}
-        with open(json_path, "w", encoding="utf-8") as fh:
-            json.dump(parsed_payload, fh, ensure_ascii=True, indent=2)
+        if self.mode == "full":
+            base_name = f"{event_id}_{agent}"
+            prompt_path = os.path.join(self.prompts_dir, base_name + ".txt")
+            response_path = os.path.join(self.responses_dir, base_name + ".txt")
+            json_path = os.path.join(self.json_dir, base_name + ".json")
+            patch_path = os.path.join(self.patches_dir, base_name + ".patch")
 
-        if isinstance(patch_text, str) and len(patch_text.strip()) > 0:
-            with open(patch_path, "w", encoding="utf-8") as fh:
-                fh.write(patch_text)
-            patch_ref = patch_path
-        else:
-            patch_ref = None
+            with open(prompt_path, "w", encoding="utf-8") as fh:
+                fh.write(prompt_text if isinstance(prompt_text, str) else "")
+            with open(response_path, "w", encoding="utf-8") as fh:
+                fh.write(response_text if isinstance(response_text, str) else "")
+            with open(json_path, "w", encoding="utf-8") as fh:
+                json.dump(parsed_payload, fh, ensure_ascii=True, indent=2)
+
+            if isinstance(patch_text, str) and len(patch_text.strip()) > 0:
+                with open(patch_path, "w", encoding="utf-8") as fh:
+                    fh.write(patch_text)
+                patch_ref = patch_path
+            else:
+                patch_ref = None
+
+            record = {
+                "ts": time.time(),
+                "run_id": self.run_id,
+                "event_id": event_id,
+                "agent": agent,
+                "prompt_path": prompt_path,
+                "response_path": response_path,
+                "json_path": json_path,
+                "patch_path": patch_ref,
+                "code_hash_before": code_hash_before,
+                "code_hash_after": code_hash_after,
+                "metrics_snapshot": metrics_snapshot,
+            }
+            if isinstance(extra, dict):
+                record.update(extra)
+            with open(self.log_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=True) + "\n")
+
+            return {
+                "event_id": event_id,
+                "prompt_path": prompt_path,
+                "response_path": response_path,
+                "json_path": json_path,
+                "patch_path": patch_ref,
+            }
 
         record = {
             "ts": time.time(),
             "run_id": self.run_id,
             "event_id": event_id,
             "agent": agent,
-            "prompt_path": prompt_path,
-            "response_path": response_path,
-            "json_path": json_path,
-            "patch_path": patch_ref,
+            "prompt": prompt_text if isinstance(prompt_text, str) else "",
+            "response": response_text if isinstance(response_text, str) else "",
+            "parsed_json": parsed_payload,
+            "patch": patch_text if isinstance(patch_text, str) else None,
             "code_hash_before": code_hash_before,
             "code_hash_after": code_hash_after,
             "metrics_snapshot": metrics_snapshot,
@@ -237,11 +273,4 @@ class DXArtifactLogger:
             record.update(extra)
         with open(self.log_path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=True) + "\n")
-
-        return {
-            "event_id": event_id,
-            "prompt_path": prompt_path,
-            "response_path": response_path,
-            "json_path": json_path,
-            "patch_path": patch_ref,
-        }
+        return {"event_id": event_id}

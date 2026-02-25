@@ -43,12 +43,13 @@ class Evolution:
         self.dx_call_mode = kwargs.get("dx_call_mode", "single")
         self.dx_observer_threshold_chars = kwargs.get("dx_observer_threshold_chars", 2200)
         self.dx_max_retries = int(kwargs.get("dx_max_retries", 2))
+        self.dx_artifacts_mode = kwargs.get("dx_artifacts_mode", "compact")
         self.last_proposal_info = None
 
         output_path = kwargs.get("output_path", ".")
         self.run_id = kwargs.get("run_id") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.results_root = os.path.join(output_path or ".", "results")
-        self.dx_artifacts = DXArtifactLogger(self.results_root, self.run_id)
+        self.dx_artifacts = DXArtifactLogger(self.results_root, self.run_id, mode=self.dx_artifacts_mode)
 
         self.interface_llm = InterfaceLLM(
             self.api_endpoint,

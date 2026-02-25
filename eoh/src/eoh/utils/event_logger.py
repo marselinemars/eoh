@@ -60,6 +60,7 @@ def build_run_meta(paras, method_name, problem_name, events_path):
         "dx_call_mode": getattr(paras, "dx_call_mode", None),
         "dx_observer_threshold_chars": getattr(paras, "dx_observer_threshold_chars", None),
         "dx_max_retries": getattr(paras, "dx_max_retries", None),
+        "dx_artifacts_mode": getattr(paras, "dx_artifacts_mode", None),
         "bp_add_synthetic_regimes": getattr(paras, "bp_add_synthetic_regimes", None),
     }
     return meta
