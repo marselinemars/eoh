@@ -64,6 +64,7 @@ class DXProposalBackend:
                 "algorithm": "one-sentence description",
                 "code": "python function text",
             },
+            "patch": "optional unified diff string or null",
         }
         dx_header = (
             "You are a diagnosis-driven heuristic editor.\n"
@@ -71,7 +72,8 @@ class DXProposalBackend:
             "Return valid JSON only, no markdown.\n"
             "Do not change objective definition.\n"
             "Use 1-2 actions only.\n"
-            "Include proposal.algorithm and proposal.code so the code can be executed."
+            "Include proposal.algorithm and proposal.code so the code can be executed.\n"
+            "You may also include patch as a unified diff string when available."
         )
         ctx_text = ""
         if isinstance(context, dict) and len(context) > 0:
@@ -140,6 +142,10 @@ class DXProposalBackend:
             return False, "proposal.algorithm missing"
         if not isinstance(code, str) or len(code.strip()) == 0:
             return False, "proposal.code missing"
+
+        patch = payload.get("patch")
+        if patch is not None and not isinstance(patch, str):
+            return False, "patch must be string or null"
         return True, None
 
     def parse_response(self, response):
