@@ -65,6 +65,15 @@ class BPONLINE():
         self.instances[heavy_name] = heavy_dataset
         self.lb = {name: self.l1_bound_dataset(dataset) for name, dataset in self.instances.items()}
 
+    def l1_bound(self, items, capacity):
+        return float(np.ceil(np.sum(items) / capacity))
+
+    def l1_bound_dataset(self, instances):
+        bounds = []
+        for instance in instances.values():
+            bounds.append(self.l1_bound(instance["items"], instance["capacity"]))
+        return float(np.mean(bounds)) if len(bounds) > 0 else 0.0
+
     def get_valid_bin_indices(self,item: float, bins: np.ndarray) -> np.ndarray:
         """Returns indices of bins in which item can fit."""
         return np.nonzero((bins - item) >= 0)[0]
@@ -290,4 +299,3 @@ class BPONLINE():
         except Exception as e:
             #print("Error:", str(e))
             return None
-
