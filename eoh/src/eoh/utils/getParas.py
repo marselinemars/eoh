@@ -42,6 +42,7 @@ class Paras():
         self.exp_events_path = "./results/events.jsonl"
         self.exp_run_id = None
         self.exp_log_event_code = False
+        self.exp_log_llm_raw = False
         self.proposal_mode = "eoh"  # ['eoh', 'dx']
         self.dx_history_k = 5
         

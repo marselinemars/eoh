@@ -137,6 +137,7 @@ class InterfaceEC():
                     'objective': None,
                     'other_inf': None,
                     'trace_summary': None,
+                    'proposal_info': None,
                 }
 
                 trace_summary = None
@@ -168,32 +169,33 @@ class InterfaceEC():
             'objective': None,
             'other_inf': None,
             'trace_summary': None,
+            'proposal_info': None,
         }
         dx_context = {}
         if operator == "i1":
             parents = None
             dx_context = self._build_dx_context(parents, operator)
-            [offspring['code'],offspring['algorithm']] =  self.evol.i1(dx_context=dx_context)
+            [offspring['code'],offspring['algorithm'],offspring['proposal_info']] =  self.evol.i1(dx_context=dx_context)
         elif operator == "e1":
             parents = self.select.parent_selection(pop,self.m)
             dx_context = self._build_dx_context(parents, operator)
-            [offspring['code'],offspring['algorithm']] = self.evol.e1(parents, dx_context=dx_context)
+            [offspring['code'],offspring['algorithm'],offspring['proposal_info']] = self.evol.e1(parents, dx_context=dx_context)
         elif operator == "e2":
             parents = self.select.parent_selection(pop,self.m)
             dx_context = self._build_dx_context(parents, operator)
-            [offspring['code'],offspring['algorithm']] = self.evol.e2(parents, dx_context=dx_context) 
+            [offspring['code'],offspring['algorithm'],offspring['proposal_info']] = self.evol.e2(parents, dx_context=dx_context) 
         elif operator == "m1":
             parents = self.select.parent_selection(pop,1)
             dx_context = self._build_dx_context(parents, operator)
-            [offspring['code'],offspring['algorithm']] = self.evol.m1(parents[0], dx_context=dx_context)
+            [offspring['code'],offspring['algorithm'],offspring['proposal_info']] = self.evol.m1(parents[0], dx_context=dx_context)
         elif operator == "m2":
             parents = self.select.parent_selection(pop,1)
             dx_context = self._build_dx_context(parents, operator)
-            [offspring['code'],offspring['algorithm']] = self.evol.m2(parents[0], dx_context=dx_context)
+            [offspring['code'],offspring['algorithm'],offspring['proposal_info']] = self.evol.m2(parents[0], dx_context=dx_context)
         elif operator == "m3":
             parents = self.select.parent_selection(pop,1)
             dx_context = self._build_dx_context(parents, operator)
-            [offspring['code'],offspring['algorithm']] = self.evol.m3(parents[0], dx_context=dx_context)
+            [offspring['code'],offspring['algorithm'],offspring['proposal_info']] = self.evol.m3(parents[0], dx_context=dx_context)
         else:
             print(f"Evolution operator [{operator}] has not been implemented ! \n") 
 
@@ -269,6 +271,9 @@ class InterfaceEC():
                     "parent_objectives": parent_objectives,
                     "delta_objective_vs_best_parent": delta_objective,
                     "trace_summary": trace_summary,
+                    "proposal_parse_error": (offspring.get("proposal_info") or {}).get("parse_error"),
+                    "proposal_used_json": (offspring.get("proposal_info") or {}).get("used_json"),
+                    "proposal_fallback_used": (offspring.get("proposal_info") or {}).get("fallback_used"),
                 }
 
                 if self.proposal_mode == "dx":
@@ -293,6 +298,7 @@ class InterfaceEC():
                 'objective': None,
                 'other_inf': None,
                 'trace_summary': None,
+                'proposal_info': getattr(self.evol, "last_proposal_info", None),
             }
             p = None
 

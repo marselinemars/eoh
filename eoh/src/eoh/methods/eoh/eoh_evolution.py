@@ -32,6 +32,7 @@ class Evolution():
         self.debug_mode = debug_mode # close prompt checking
         self.proposal_mode = kwargs.get("proposal_mode", "eoh")
         self.proposal_backend = get_proposal_backend(self.proposal_mode)
+        self.last_proposal_info = None
 
 
         self.interface_llm = InterfaceLLM(self.api_endpoint, self.api_key, self.model_LLM,llm_use_local,llm_local_url, self.debug_mode)
@@ -143,9 +144,29 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def _get_alg(self,prompt_content):
 
         response = self.interface_llm.get_response(prompt_content)
+        proposal_meta = {
+            "proposal_mode": self.proposal_mode,
+            "prompt": prompt_content,
+            "raw_response": response,
+            "used_json": False,
+            "parse_error": None,
+            "parsed_json": None,
+            "fallback_used": False,
+            "retry_count": 0,
+        }
 
-        parsed = self.proposal_backend.parse_response(response)
-        if parsed is None:
+        parsed = None
+        if self.proposal_mode == "dx":
+            code_json, algorithm_json, parse_meta = self.proposal_backend.parse_response(response)
+            proposal_meta["used_json"] = bool(parse_meta.get("used_json"))
+            proposal_meta["parse_error"] = parse_meta.get("parse_error")
+            proposal_meta["parsed_json"] = parse_meta.get("parsed_json")
+            if code_json is not None and algorithm_json is not None:
+                parsed = (code_json, algorithm_json)
+            else:
+                proposal_meta["fallback_used"] = True
+                parsed = self._legacy_extract(response)
+        else:
             parsed = self._legacy_extract(response)
 
         n_retry = 1
@@ -154,8 +175,20 @@ Finally, provide the revised code, keeping the function name, inputs, and output
                 print("Error: algorithm or code not identified, wait 1 seconds and retrying ... ")
 
             response = self.interface_llm.get_response(prompt_content)
-            parsed = self.proposal_backend.parse_response(response)
-            if parsed is None:
+            proposal_meta["raw_response"] = response
+            proposal_meta["retry_count"] = n_retry
+
+            if self.proposal_mode == "dx":
+                code_json, algorithm_json, parse_meta = self.proposal_backend.parse_response(response)
+                proposal_meta["used_json"] = bool(parse_meta.get("used_json"))
+                proposal_meta["parse_error"] = parse_meta.get("parse_error")
+                proposal_meta["parsed_json"] = parse_meta.get("parsed_json")
+                if code_json is not None and algorithm_json is not None:
+                    parsed = (code_json, algorithm_json)
+                else:
+                    proposal_meta["fallback_used"] = True
+                    parsed = self._legacy_extract(response)
+            else:
                 parsed = self._legacy_extract(response)
                 
             if n_retry > 3:
@@ -164,13 +197,14 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         if parsed is None:
             # Keep old behavior: this will raise and be handled by caller.
+            self.last_proposal_info = proposal_meta
             raise ValueError("Could not parse algorithm or code from LLM response.")
         code, algorithm = parsed
 
         code_all = code+" "+", ".join(s for s in self.prompt_func_outputs) 
 
-
-        return [code_all, algorithm]
+        self.last_proposal_info = proposal_meta
+        return [code_all, algorithm, proposal_meta]
 
 
     def i1(self, dx_context=None):
@@ -183,7 +217,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -191,7 +225,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
 
-        return [code_all, algorithm]
+        return [code_all, algorithm, proposal_info]
     
     def e1(self,parents, dx_context=None):
       
@@ -203,7 +237,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -211,7 +245,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
 
-        return [code_all, algorithm]
+        return [code_all, algorithm, proposal_info]
     
     def e2(self,parents, dx_context=None):
       
@@ -223,7 +257,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -231,7 +265,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
 
-        return [code_all, algorithm]
+        return [code_all, algorithm, proposal_info]
     
     def m1(self,parents, dx_context=None):
       
@@ -243,7 +277,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -251,7 +285,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
 
-        return [code_all, algorithm]
+        return [code_all, algorithm, proposal_info]
     
     def m2(self,parents, dx_context=None):
       
@@ -263,7 +297,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -271,7 +305,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
 
-        return [code_all, algorithm]
+        return [code_all, algorithm, proposal_info]
     
     def m3(self,parents, dx_context=None):
       
@@ -283,7 +317,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content)
+        [code_all, algorithm, proposal_info] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -291,4 +325,4 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
 
-        return [code_all, algorithm]
+        return [code_all, algorithm, proposal_info]

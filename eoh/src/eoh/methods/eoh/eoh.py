@@ -66,6 +66,7 @@ class EOH:
         self.events_path = resolve_events_path(self.output_path, getattr(paras, "exp_events_path", "./results/events.jsonl"))
         self.run_id = getattr(paras, "exp_run_id", None)
         self.log_event_code = getattr(paras, "exp_log_event_code", False)
+        self.log_llm_raw = getattr(paras, "exp_log_llm_raw", False)
         self.event_logger = EventLogger(self.log_events, self.events_path, self.run_id)
 
         print("- EoH parameters loaded -")
@@ -145,6 +146,20 @@ class EOH:
                     record["trace_summary"] = ind.get("trace_summary")
                 if ind.get("other_inf") is not None:
                     record["evaluation_info"] = ind.get("other_inf")
+                if ind.get("proposal_info") is not None:
+                    proposal_info = {
+                        "proposal_mode": ind["proposal_info"].get("proposal_mode"),
+                        "used_json": ind["proposal_info"].get("used_json"),
+                        "parse_error": ind["proposal_info"].get("parse_error"),
+                        "fallback_used": ind["proposal_info"].get("fallback_used"),
+                        "retry_count": ind["proposal_info"].get("retry_count"),
+                    }
+                    if ind["proposal_info"].get("parsed_json") is not None:
+                        proposal_info["parsed_json"] = ind["proposal_info"].get("parsed_json")
+                    if self.log_llm_raw:
+                        proposal_info["prompt"] = ind["proposal_info"].get("prompt")
+                        proposal_info["raw_response"] = ind["proposal_info"].get("raw_response")
+                    record["proposal_info"] = proposal_info
                 if parents_list is not None and idx < len(parents_list):
                     parents = parents_list[idx]
                     if parents:

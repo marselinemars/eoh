@@ -48,6 +48,7 @@ def build_run_meta(paras, method_name, problem_name, events_path):
         "exp_use_continue": getattr(paras, "exp_use_continue", None),
         "exp_continue_path": getattr(paras, "exp_continue_path", None),
         "exp_output_path": getattr(paras, "exp_output_path", None),
+        "exp_log_llm_raw": getattr(paras, "exp_log_llm_raw", None),
         "eva_timeout": getattr(paras, "eva_timeout", None),
         "eva_numba_decorator": getattr(paras, "eva_numba_decorator", None),
         "llm_use_local": getattr(paras, "llm_use_local", None),
