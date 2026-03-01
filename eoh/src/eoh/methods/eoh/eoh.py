@@ -2,8 +2,10 @@ import numpy as np
 import json
 import random
 import time
+import os
 
 from .eoh_interface_EC import InterfaceEC
+from .diagnosis import Diagnostician
 # main class for eoh
 class EOH:
 
@@ -57,6 +59,18 @@ class EOH:
         self.timeout = paras.eva_timeout
 
         self.use_numba = paras.eva_numba_decorator
+        self.use_ddhs = getattr(paras, "use_ddhs", False)
+        self.ddhs_shuffle = getattr(paras, "ddhs_shuffle", False)
+        self.ddhs_mode = "ddhs_shuffle" if self.use_ddhs and self.ddhs_shuffle else ("ddhs" if self.use_ddhs else "baseline")
+        self.diagnostician = Diagnostician()
+        self.diagnosis_records = []
+        self.diagnosis_log_path = os.path.join(self.output_path, "results", "diagnosis_log.json")
+        self.ddhs_routing = {
+            "OVER_GREEDY": "m2",
+            "FLAT_SCORING": "e1",
+            "UNSTABLE_CAPACITY": "m3",
+            "EXPLORATION_NEEDED": "e2",
+        }
 
         print("- EoH parameters loaded -")
 
@@ -142,28 +156,62 @@ class EOH:
         n_op = len(self.operators)
 
         for pop in range(n_start, self.n_pop):  
+            fitness_before = None
+            diagnosis_label = None
+            diagnosis_label_routed = None
+            ddhs_operator = None
+            diagnosis_metrics = {}
+            if len(population) > 0:
+                fitness_before = population[0].get("objective")
+
+            if self.use_ddhs:
+                best_individual = population[0] if len(population) > 0 else None
+                best_trace = None if best_individual is None else best_individual.get("trace")
+                diagnosis_metrics = self.diagnostician.compute_metrics(best_trace)
+                diagnosis_label = self.diagnostician.diagnose(diagnosis_metrics)
+                diagnosis_label_routed = diagnosis_label
+                if self.ddhs_shuffle:
+                    diagnosis_label_routed = random.choice(list(self.ddhs_routing.keys()))
+                ddhs_operator = self.ddhs_routing.get(diagnosis_label_routed, "e2")
+
             #print(f" [{na + 1} / {self.pop_size}] ", end="|")         
-            for i in range(n_op):
-                op = self.operators[i]
-                print(f" OP: {op}, [{i + 1} / {n_op}] ", end="|") 
-                op_w = self.operator_weights[i]
-                if (np.random.rand() < op_w):
-                    parents, offsprings = interface_ec.get_algorithm(population, op)
-                self.add2pop(population, offsprings)  # Check duplication, and add the new offspring
-                for off in offsprings:
-                    print(" Obj: ", off['objective'], end="|")
-                # if is_add:
-                #     data = {}
-                #     for i in range(len(parents)):
-                #         data[f"parent{i + 1}"] = parents[i]
-                #     data["offspring"] = offspring
-                #     with open(self.output_path + "/results/history/pop_" + str(pop + 1) + "_" + str(
-                #             na) + "_" + op + ".json", "w") as file:
-                #         json.dump(data, file, indent=5)
-                # populatin management
-                size_act = min(len(population), self.pop_size)
-                population = self.manage.population_management(population, size_act)
-                print()
+            if self.use_ddhs:
+                operator_weight_map = {op_name: self.operator_weights[idx] for idx, op_name in enumerate(self.operators)}
+                for i in range(n_op):
+                    op = ddhs_operator
+                    op_w = operator_weight_map.get(op, 1)
+                    print(f" OP: {op}, [{i + 1} / {n_op}] ", end="|")
+                    offsprings = []
+                    if (np.random.rand() < op_w):
+                        parents, offsprings = interface_ec.get_algorithm(population, op)
+                    self.add2pop(population, offsprings)
+                    for off in offsprings:
+                        print(" Obj: ", off['objective'], end="|")
+                    size_act = min(len(population), self.pop_size)
+                    population = self.manage.population_management(population, size_act)
+                    print()
+            else:
+                for i in range(n_op):
+                    op = self.operators[i]
+                    print(f" OP: {op}, [{i + 1} / {n_op}] ", end="|") 
+                    op_w = self.operator_weights[i]
+                    if (np.random.rand() < op_w):
+                        parents, offsprings = interface_ec.get_algorithm(population, op)
+                    self.add2pop(population, offsprings)  # Check duplication, and add the new offspring
+                    for off in offsprings:
+                        print(" Obj: ", off['objective'], end="|")
+                    # if is_add:
+                    #     data = {}
+                    #     for i in range(len(parents)):
+                    #         data[f"parent{i + 1}"] = parents[i]
+                    #     data["offspring"] = offspring
+                    #     with open(self.output_path + "/results/history/pop_" + str(pop + 1) + "_" + str(
+                    #             na) + "_" + op + ".json", "w") as file:
+                    #         json.dump(data, file, indent=5)
+                    # populatin management
+                    size_act = min(len(population), self.pop_size)
+                    population = self.manage.population_management(population, size_act)
+                    print()
 
 
             # Save population to a file
@@ -175,6 +223,21 @@ class EOH:
             filename = self.output_path + "/results/pops_best/population_generation_" + str(pop + 1) + ".json"
             with open(filename, 'w') as f:
                 json.dump(population[0], f, indent=5)
+
+            fitness_after = population[0].get("objective") if len(population) > 0 else None
+            diagnosis_record = {
+                "generation": int(pop + 1),
+                "mode": self.ddhs_mode,
+                "diagnosis": diagnosis_label,
+                "diagnosis_routed": diagnosis_label_routed,
+                "chosen_operator": ddhs_operator,
+                "fitness_before": fitness_before,
+                "fitness_after": fitness_after,
+                "metrics": diagnosis_metrics,
+            }
+            self.diagnosis_records.append(diagnosis_record)
+            with open(self.diagnosis_log_path, "w", encoding="utf-8") as fh:
+                json.dump(self.diagnosis_records, fh, indent=2)
 
 
             print(f"--- {pop + 1} of {self.n_pop} populations finished. Time Cost:  {((time.time()-time_start)/60):.1f} m")

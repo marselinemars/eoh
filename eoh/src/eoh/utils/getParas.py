@@ -38,6 +38,9 @@ class Paras():
         self.exp_continue_id = 0
         self.exp_continue_path = "./results/pops/population_generation_0.json"
         self.exp_n_proc = 1
+        self.mode = "baseline"  # ['baseline', 'ddhs', 'ddhs_shuffle']
+        self.use_ddhs = False
+        self.ddhs_shuffle = False
         
         #####################
         ###  Evaluation settings  ###
@@ -102,6 +105,19 @@ class Paras():
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
+
+        if "mode" in kwargs:
+            if self.mode == "baseline":
+                self.use_ddhs = False
+                self.ddhs_shuffle = False
+            elif self.mode == "ddhs":
+                self.use_ddhs = True
+                self.ddhs_shuffle = False
+            elif self.mode == "ddhs_shuffle":
+                self.use_ddhs = True
+                self.ddhs_shuffle = True
+            else:
+                raise ValueError("mode must be one of: baseline, ddhs, ddhs_shuffle")
               
         # Identify and set parallel 
         self.set_parallel()
