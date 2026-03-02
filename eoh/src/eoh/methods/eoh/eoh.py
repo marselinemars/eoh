@@ -216,6 +216,9 @@ class EOH:
         n_op = len(self.operators)
 
         for pop in range(n_start, self.n_pop):  
+            if len(population) == 0:
+                print("Warning: population is empty. Stopping evolution early.")
+                break
             fitness_before = None
             diagnosis_label = None
             diagnosis_label_routed = None
@@ -283,7 +286,10 @@ class EOH:
             # Save the best one to a file
             filename = self.output_path + "/results/pops_best/population_generation_" + str(pop + 1) + ".json"
             with open(filename, 'w') as f:
-                json.dump(self._serialize_best(population[0]), f, indent=5)
+                if len(population) > 0:
+                    json.dump(self._serialize_best(population[0]), f, indent=5)
+                else:
+                    json.dump({}, f, indent=5)
 
             fitness_after = population[0].get("objective") if len(population) > 0 else None
             diagnosis_record = {
