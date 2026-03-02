@@ -21,48 +21,22 @@ class BPONLINE():
         """Performs online binpacking of `items` into `bins`."""
         # Track which items are added to each bin.
         packing = [[] for _ in bins]
-        per_item_trace = []
-        full_capacity = float(np.max(bins)) if len(bins) > 0 else 0.0
         # Add items to bins.
+        n = 1
         for item in items:
             # Extract bins that have sufficient space to fit item.
-            open_bins = int(np.sum(bins < full_capacity))
             valid_bin_indices = self.get_valid_bin_indices(item, bins)
             # Score each bin based on heuristic.
             priorities = alg.score(item, bins[valid_bin_indices])
-            candidate_bin_count = int(len(valid_bin_indices))
-            best_score = float(np.max(priorities)) if len(priorities) > 0 else 0.0
-            if len(priorities) > 1:
-                second_best_score = float(np.partition(priorities, -2)[-2])
-            elif len(priorities) == 1:
-                second_best_score = best_score
-            else:
-                second_best_score = 0.0
             # Add item to bin with highest priority.
             best_bin = valid_bin_indices[np.argmax(priorities)]
-            was_new_bin = bool(bins[best_bin] == full_capacity)
             bins[best_bin] -= item
             packing[best_bin].append(item)
-            per_item_trace.append(
-                {
-                    "item_size": float(item),
-                    "open_bins": open_bins,
-                    "number_of_open_bins": open_bins,
-                    "candidate_bins": candidate_bin_count,
-                    "candidate_bin_count": candidate_bin_count,
-                    "best_score": best_score,
-                    "second_best_score": second_best_score,
-                    "chosen_bin_index": int(best_bin),
-                    "new_bin": was_new_bin,
-                    "whether_new_bin_opened": was_new_bin,
-                    "remaining_capacity": float(bins[best_bin]),
-                    "remaining_capacity_after_assignment": float(bins[best_bin]),
-                }
-            )
+            n=n+1
             
         # Remove unused bins from packing.
         packing = [bin_items for bin_items in packing if bin_items]
-        return packing, bins, per_item_trace
+        return packing, bins
 
 
     # @funsearch.run
@@ -75,9 +49,7 @@ class BPONLINE():
         # Perform online binpacking for each instance.
         # for name in instances:
         #     #print(name)
-        all_per_item = []
-        total_bins_used = 0
-        total_items = 0
+
         for name, dataset in self.instances.items():
             num_bins_list = []
             for _, instance in dataset.items():
@@ -93,13 +65,10 @@ class BPONLINE():
                 bins = np.array([capacity for _ in range(instance['num_items'])])
                 # Pack items into bins and return remaining capacity in bins_packed, which
                 # has shape (num_items,).
-                _, bins_packed, per_item = self.online_binpack(items, bins, alg)
+                _, bins_packed = self.online_binpack(items, bins, alg)
                 # If remaining capacity in a bin is equal to initial capacity, then it is
                 # unused. Count number of used bins.
                 num_bins = (bins_packed != capacity).sum()
-                total_bins_used += int(num_bins)
-                total_items += int(instance['num_items'])
-                all_per_item.extend(per_item)
 
                 num_bins_list.append(-num_bins)
 
@@ -111,14 +80,7 @@ class BPONLINE():
         # Score of heuristic function is negative of average number of bins used
         # across instances (as we want to minimize number of bins).
 
-        trace = {
-            "per_item": all_per_item,
-            "summary": {
-                "total_bins_used": int(total_bins_used),
-                "total_items": int(total_items),
-            },
-        }
-        return fitness, trace
+        return fitness
 
 
 
@@ -155,8 +117,9 @@ class BPONLINE():
                 # Add the module to sys.modules so it can be imported
                 sys.modules[heuristic_module.__name__] = heuristic_module
 
-                result = self.evaluateGreedy(heuristic_module)
-                return result
+                fitness = self.evaluateGreedy(heuristic_module)
+
+                return fitness
         except Exception as e:
             #print("Error:", str(e))
             return None

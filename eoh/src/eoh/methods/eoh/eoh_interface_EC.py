@@ -84,17 +84,11 @@ class InterfaceEC():
                     'algorithm': seeds[i]['algorithm'],
                     'code': seeds[i]['code'],
                     'objective': None,
-                    'other_inf': None,
-                    'trace': None,
+                    'other_inf': None
                 }
 
-                trace = None
-                fit_i = fitness[i]
-                if isinstance(fit_i, tuple) and len(fit_i) == 2:
-                    fit_i, trace = fit_i
-                obj = np.array(fit_i)
+                obj = np.array(fitness[i])
                 seed_alg['objective'] = np.round(obj, 5)
-                seed_alg['trace'] = trace
                 population.append(seed_alg)
 
             except Exception as e:
@@ -111,8 +105,7 @@ class InterfaceEC():
             'algorithm': None,
             'code': None,
             'objective': None,
-            'other_inf': None,
-            'trace': None,
+            'other_inf': None
         }
         if operator == "i1":
             parents = None
@@ -185,14 +178,8 @@ class InterfaceEC():
             #self.code2file(offspring['code'])
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(self.interface_eval.evaluate, code)
-                fitness_result = future.result(timeout=self.timeout)
-                trace = None
-                if isinstance(fitness_result, tuple) and len(fitness_result) == 2:
-                    fitness, trace = fitness_result
-                else:
-                    fitness = fitness_result
+                fitness = future.result(timeout=self.timeout)
                 offspring['objective'] = np.round(fitness, 5)
-                offspring['trace'] = trace
                 future.cancel()        
                 # fitness = self.interface_eval.evaluate(code)
                 
@@ -203,8 +190,7 @@ class InterfaceEC():
                 'algorithm': None,
                 'code': None,
                 'objective': None,
-                'other_inf': None,
-                'trace': None,
+                'other_inf': None
             }
             p = None
 
