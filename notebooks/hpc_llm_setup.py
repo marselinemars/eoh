@@ -9,6 +9,10 @@ from typing import Tuple
 
 import requests
 
+DEFAULT_HPC_BASE = "http://vllm-nodeport.vllm-ns.svc.cluster.local:8000/v1"
+DEFAULT_HPC_KEY = "my-key-ensia-2022-1030"
+DEFAULT_HPC_MODEL = "QuantTrio/Qwen3-VL-235B-A22B-Instruct-AWQ"
+
 
 @dataclass
 class HPCBridgeConfig:
@@ -41,31 +45,40 @@ def ensure_eoh_src_on_path(start_dir: Path | None = None) -> Tuple[Path, Path]:
 
 
 def config_from_env() -> HPCBridgeConfig:
-    base_url = os.getenv(
-        "ENSIA_VLLM_BASE",
-        "http://vllm-nodeport.vllm-ns.svc.cluster.local:8000/v1",
-    )
-    api_key = os.getenv("ENSIA_VLLM_API_KEY", "")
-    model = os.getenv("ENSIA_VLLM_MODEL", "auto")
+    base_url = os.getenv("ENSIA_VLLM_BASE", DEFAULT_HPC_BASE)
+    api_key = os.getenv("ENSIA_VLLM_API_KEY", DEFAULT_HPC_KEY)
+    model = os.getenv("ENSIA_VLLM_MODEL", DEFAULT_HPC_MODEL)
     port = int(os.getenv("EOH_BRIDGE_PORT", "18000"))
     return HPCBridgeConfig(base_url=base_url, api_key=api_key, model=model, port=port)
 
 
-def resolve_model_id(cfg: HPCBridgeConfig, timeout_s: int = 60) -> str:
-    if not cfg.api_key:
-        raise RuntimeError("Missing ENSIA_VLLM_API_KEY.")
-    if cfg.model != "auto":
-        return cfg.model
-
-    headers = {"Authorization": f"Bearer {cfg.api_key}"}
+def _fetch_model_ids(cfg: HPCBridgeConfig, timeout_s: int = 60) -> list[str]:
+    headers = {}
+    if cfg.api_key:
+        headers["Authorization"] = f"Bearer {cfg.api_key}"
     resp = requests.get(f"{cfg.base_url}/models", headers=headers, timeout=timeout_s)
     if resp.status_code != 200:
         raise RuntimeError(f"/models failed: {resp.status_code} {resp.text[:300]}")
-
     payload = resp.json()
     model_ids = [m.get("id") for m in payload.get("data", []) if m.get("id")]
+    return model_ids
+
+
+def resolve_model_id(cfg: HPCBridgeConfig, timeout_s: int = 60) -> str:
+    model_ids = _fetch_model_ids(cfg, timeout_s=timeout_s)
     if not model_ids:
         raise RuntimeError("No model IDs returned by /models.")
+
+    if cfg.model == "auto":
+        return model_ids[0]
+
+    if cfg.model in model_ids:
+        return cfg.model
+
+    print(
+        f"Requested model '{cfg.model}' is unavailable. "
+        f"Falling back to available model '{model_ids[0]}'."
+    )
     return model_ids[0]
 
 
@@ -94,9 +107,10 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                 params = req.get("params", {}) or {}
 
                 headers = {
-                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 }
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
 
                 chat_payload = {
                     "model": model_id,
