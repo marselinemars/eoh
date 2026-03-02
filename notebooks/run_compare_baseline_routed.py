@@ -63,6 +63,25 @@ def _tail_run_log(run_log_path: Path, stop_event: threading.Event, log, mode: st
         time.sleep(2)
 
 
+def _heartbeat(mode_root: Path, run_log_path: Path, pop0_path: Path, stop_event: threading.Event, log, mode: str):
+    started = time.time()
+    while not stop_event.is_set():
+        elapsed = int(time.time() - started)
+        run_log_lines = 0
+        if run_log_path.exists():
+            with run_log_path.open("r", encoding="utf-8") as f:
+                run_log_lines = sum(1 for _ in f)
+        log(
+            f"{mode} heartbeat: elapsed={elapsed}s pop0_exists={pop0_path.exists()} run_log_lines={run_log_lines}",
+            mode=mode,
+            event="heartbeat",
+            elapsed_s=elapsed,
+            pop0_exists=pop0_path.exists(),
+            run_log_lines=run_log_lines,
+        )
+        time.sleep(20)
+
+
 def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settings: dict, log):
     from eoh import eoh
     from eoh.utils.getParas import Paras
@@ -70,11 +89,20 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
     mode_root = Path(output_path).resolve()
     mode_root.mkdir(parents=True, exist_ok=True)
     run_log_path = mode_root / "results" / "run_log.jsonl"
-    log(f"starting mode={mode}", mode=mode, output_path=str(mode_root), run_log_path=str(run_log_path))
+    pop0_path = mode_root / "results" / "pops" / "population_generation_0.json"
+    log(
+        f"starting mode={mode}",
+        mode=mode,
+        output_path=str(mode_root),
+        run_log_path=str(run_log_path),
+        population0_path=str(pop0_path),
+    )
 
     stop_event = threading.Event()
     monitor = threading.Thread(target=_tail_run_log, args=(run_log_path, stop_event, log, mode), daemon=True)
+    heart = threading.Thread(target=_heartbeat, args=(mode_root, run_log_path, pop0_path, stop_event, log, mode), daemon=True)
     monitor.start()
+    heart.start()
 
     random.seed(settings["seed"])
     np.random.seed(settings["seed"])
@@ -102,6 +130,7 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
     finally:
         stop_event.set()
         monitor.join(timeout=3)
+        heart.join(timeout=3)
 
 
 def main():
