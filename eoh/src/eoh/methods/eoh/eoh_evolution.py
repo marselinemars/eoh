@@ -2,6 +2,7 @@ import re
 import time
 import json
 import os
+import numpy as np
 from ...llm.interface_LLM import InterfaceLLM
 
 class Evolution():
@@ -59,6 +60,85 @@ class Evolution():
         }
         with open(file_path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2, ensure_ascii=True)
+
+    def _extract_algorithm(self, response: str) -> str:
+        algorithm = re.findall(r"\{(.*)\}", response, re.DOTALL)
+        if len(algorithm) > 0:
+            return algorithm[0].strip()
+        for line in response.splitlines():
+            line = line.strip()
+            if line:
+                return line
+        return "LLM-generated score heuristic"
+
+    def _extract_function_block(self, text: str) -> str:
+        lines = text.splitlines()
+        func_pat = re.compile(r"^\s*def\s+" + re.escape(self.prompt_func_name) + r"\s*\(")
+        start = None
+        for i, line in enumerate(lines):
+            if func_pat.match(line):
+                start = i
+                break
+        if start is None:
+            return ""
+
+        import_lines = []
+        for line in lines[:start]:
+            s = line.strip()
+            if s.startswith("import ") or s.startswith("from "):
+                import_lines.append(s)
+
+        block = [lines[start]]
+        for j in range(start + 1, len(lines)):
+            line = lines[j]
+            if line.strip() == "":
+                block.append(line)
+                continue
+            if line.startswith(" ") or line.startswith("\t"):
+                block.append(line)
+                continue
+            break
+
+        code = "\n".join(import_lines + block).strip() + "\n"
+        if "import numpy as np" not in code:
+            code = "import numpy as np\n" + code
+        return code
+
+    def _validate_code(self, code: str) -> bool:
+        try:
+            compiled = compile(code, "<llm_code>", "exec")
+            ns = {}
+            exec(compiled, ns)
+            fn = ns.get(self.prompt_func_name)
+            if fn is None or not callable(fn):
+                return False
+            bins = np.array([10.0, 20.0], dtype=float)
+            out = fn(5.0, bins)
+            arr = np.asarray(out, dtype=float)
+            return arr.shape == bins.shape
+        except Exception:
+            return False
+
+    def _extract_code(self, response: str) -> str:
+        candidates = re.findall(r"```(?:python)?\s*(.*?)```", response, flags=re.DOTALL | re.IGNORECASE)
+        if "import " in response:
+            candidates.append(response[response.find("import "):])
+        if "def " in response:
+            candidates.append(response[response.find("def "):])
+        candidates.append(response)
+
+        for cand in candidates:
+            code = self._extract_function_block(cand)
+            if not code:
+                continue
+            if self._validate_code(code):
+                return code
+
+        return (
+            "import numpy as np\n"
+            "def score(item, bins):\n"
+            "    return -bins\n"
+        )
 
     def get_prompt_i1(self):
         
@@ -146,50 +226,18 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
 
     def _get_alg(self,prompt_content, generation_idx=None, operator_name=None):
+        response = ""
+        algorithm = "LLM-generated score heuristic"
+        code_all = ""
 
-        response = self.interface_llm.get_response(prompt_content)
-
-        algorithm = re.findall(r"\{(.*)\}", response, re.DOTALL)
-        if len(algorithm) == 0:
-            if 'python' in response:
-                algorithm = re.findall(r'^.*?(?=python)', response,re.DOTALL)
-            elif 'import' in response:
-                algorithm = re.findall(r'^.*?(?=import)', response,re.DOTALL)
-            else:
-                algorithm = re.findall(r'^.*?(?=def)', response,re.DOTALL)
-
-        code = re.findall(r"import.*return", response, re.DOTALL)
-        if len(code) == 0:
-            code = re.findall(r"def.*return", response, re.DOTALL)
-
-        n_retry = 1
-        while (len(algorithm) == 0 or len(code) == 0):
-            if self.debug_mode:
-                print("Error: algorithm or code not identified, wait 1 seconds and retrying ... ")
-
+        n_retry = 0
+        while n_retry <= 3:
             response = self.interface_llm.get_response(prompt_content)
-
-            algorithm = re.findall(r"\{(.*)\}", response, re.DOTALL)
-            if len(algorithm) == 0:
-                if 'python' in response:
-                    algorithm = re.findall(r'^.*?(?=python)', response,re.DOTALL)
-                elif 'import' in response:
-                    algorithm = re.findall(r'^.*?(?=import)', response,re.DOTALL)
-                else:
-                    algorithm = re.findall(r'^.*?(?=def)', response,re.DOTALL)
-
-            code = re.findall(r"import.*return", response, re.DOTALL)
-            if len(code) == 0:
-                code = re.findall(r"def.*return", response, re.DOTALL)
-                
-            if n_retry > 3:
+            algorithm = self._extract_algorithm(response)
+            code_all = self._extract_code(response)
+            if self._validate_code(code_all):
                 break
-            n_retry +=1
-
-        algorithm = algorithm[0]
-        code = code[0] 
-
-        code_all = code+" "+", ".join(s for s in self.prompt_func_outputs) 
+            n_retry += 1
 
         self._save_llm_interaction(
             prompt_text=prompt_content,
