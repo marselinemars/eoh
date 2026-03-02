@@ -3,6 +3,7 @@ import json
 import random
 import time
 import os
+import hashlib
 
 from .eoh_interface_EC import InterfaceEC
 from .diagnosis import Diagnostician
@@ -61,10 +62,16 @@ class EOH:
         self.use_numba = paras.eva_numba_decorator
         self.use_ddhs = getattr(paras, "use_ddhs", False)
         self.ddhs_shuffle = getattr(paras, "ddhs_shuffle", False)
+        self.final_full_evaluation = bool(getattr(paras, "final_full_evaluation", True))
+        self.log_trace_summary = bool(getattr(paras, "log_trace_summary", True))
+        self.log_exemplars = bool(getattr(paras, "log_exemplars", False))
+        self.log_llm_interactions = bool(getattr(paras, "log_llm_interactions", False))
+        self.log_full_population = bool(getattr(paras, "log_full_population", False))
         self.ddhs_mode = "ddhs_shuffle" if self.use_ddhs and self.ddhs_shuffle else ("ddhs" if self.use_ddhs else "baseline")
         self.diagnostician = Diagnostician()
         self.diagnosis_records = []
         self.diagnosis_log_path = os.path.join(self.output_path, "results", "diagnosis_log.json")
+        self.llm_log_dir = os.path.join(self.output_path, "logs", "llm_interactions")
         self.ddhs_routing = {
             "OVER_GREEDY": "m2",
             "FLAT_SCORING": "e1",
@@ -85,6 +92,57 @@ class EOH:
                     if (self.debug_mode):
                         print("duplicated result, retrying ... ")
             population.append(off)
+
+    def _code_hash(self, code):
+        if code is None:
+            return None
+        return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+    def _trace_summary(self, trace):
+        if isinstance(trace, dict):
+            summary = trace.get("summary")
+            if isinstance(summary, dict):
+                return summary
+        return {}
+
+    def _compact_individual(self, individual):
+        trace = individual.get("trace")
+        metrics = self.diagnostician.compute_metrics(trace)
+        diagnosis_label = self.diagnostician.diagnose(metrics)
+        metric_summary = self._trace_summary(trace) if self.log_trace_summary else {}
+        data = {
+            "objective": individual.get("objective"),
+            "operator": individual.get("operator"),
+            "diagnosis": diagnosis_label,
+            "metric_summary": metric_summary,
+            "code_hash": self._code_hash(individual.get("code")),
+            "code": individual.get("code"),
+            "algorithm": individual.get("algorithm"),
+        }
+        if self.log_full_population:
+            data["trace"] = trace
+            data["other_inf"] = individual.get("other_inf")
+        return data
+
+    def _serialize_population(self, population):
+        if self.log_full_population:
+            return population
+        return [self._compact_individual(individual) for individual in population]
+
+    def _serialize_best(self, individual):
+        if self.log_full_population:
+            return individual
+        return self._compact_individual(individual)
+
+    def _restore_trace_if_missing(self, individual):
+        if individual.get("trace") is not None:
+            return individual
+        metric_summary = individual.get("metric_summary")
+        if isinstance(metric_summary, dict):
+            individual["trace"] = {"summary": metric_summary}
+        else:
+            individual["trace"] = None
+        return individual
     
 
     # run eoh 
@@ -103,7 +161,9 @@ class EOH:
         # interface for ec operators
         interface_ec = InterfaceEC(self.pop_size, self.m, self.api_endpoint, self.api_key, self.llm_model, self.use_local_llm, self.llm_local_url,
                                    self.debug_mode, interface_prob, select=self.select,n_p=self.exp_n_proc,
-                                   timeout = self.timeout, use_numba=self.use_numba
+                                   timeout = self.timeout, use_numba=self.use_numba,
+                                   log_llm_interactions=self.log_llm_interactions,
+                                   llm_log_dir=self.llm_log_dir,
                                    )
 
         # initialization
@@ -114,7 +174,7 @@ class EOH:
             population = interface_ec.population_generation_seed(data,self.exp_n_proc)
             filename = self.output_path + "/results/pops/population_generation_0.json"
             with open(filename, 'w') as f:
-                json.dump(population, f, indent=5)
+                json.dump(self._serialize_population(population), f, indent=5)
             n_start = 0
         else:
             if self.load_pop:  # load population from files
@@ -122,7 +182,7 @@ class EOH:
                 with open(self.load_pop_path) as file:
                     data = json.load(file)
                 for individual in data:
-                    population.append(individual)
+                    population.append(self._restore_trace_if_missing(individual))
                 print("initial population has been loaded!")
                 n_start = self.load_pop_id
             else:  # create new population
@@ -149,7 +209,7 @@ class EOH:
                 # Save population to a file
                 filename = self.output_path + "/results/pops/population_generation_0.json"
                 with open(filename, 'w') as f:
-                    json.dump(population, f, indent=5)
+                    json.dump(self._serialize_population(population), f, indent=5)
                 n_start = 0
 
         # main loop
@@ -183,7 +243,7 @@ class EOH:
                     print(f" OP: {op}, [{i + 1} / {n_op}] ", end="|")
                     offsprings = []
                     if (np.random.rand() < op_w):
-                        parents, offsprings = interface_ec.get_algorithm(population, op)
+                        parents, offsprings = interface_ec.get_algorithm(population, op, generation_idx=pop + 1)
                     self.add2pop(population, offsprings)
                     for off in offsprings:
                         print(" Obj: ", off['objective'], end="|")
@@ -195,8 +255,9 @@ class EOH:
                     op = self.operators[i]
                     print(f" OP: {op}, [{i + 1} / {n_op}] ", end="|") 
                     op_w = self.operator_weights[i]
+                    offsprings = []
                     if (np.random.rand() < op_w):
-                        parents, offsprings = interface_ec.get_algorithm(population, op)
+                        parents, offsprings = interface_ec.get_algorithm(population, op, generation_idx=pop + 1)
                     self.add2pop(population, offsprings)  # Check duplication, and add the new offspring
                     for off in offsprings:
                         print(" Obj: ", off['objective'], end="|")
@@ -217,12 +278,12 @@ class EOH:
             # Save population to a file
             filename = self.output_path + "/results/pops/population_generation_" + str(pop + 1) + ".json"
             with open(filename, 'w') as f:
-                json.dump(population, f, indent=5)
+                json.dump(self._serialize_population(population), f, indent=5)
 
             # Save the best one to a file
             filename = self.output_path + "/results/pops_best/population_generation_" + str(pop + 1) + ".json"
             with open(filename, 'w') as f:
-                json.dump(population[0], f, indent=5)
+                json.dump(self._serialize_best(population[0]), f, indent=5)
 
             fitness_after = population[0].get("objective") if len(population) > 0 else None
             diagnosis_record = {
@@ -245,4 +306,32 @@ class EOH:
             for i in range(len(population)):
                 print(str(population[i]['objective']) + " ", end="")
             print()
+
+        if self.final_full_evaluation and len(population) > 0:
+            best_code = population[0].get("code")
+            final_full_objective = None
+            final_trace_summary = {}
+            if best_code is not None:
+                if hasattr(interface_prob, "set_full_evaluation_mode"):
+                    interface_prob.set_full_evaluation_mode(True)
+                try:
+                    final_eval = interface_prob.evaluate(best_code)
+                    if isinstance(final_eval, tuple) and len(final_eval) == 2:
+                        final_full_objective, final_trace = final_eval
+                        final_trace_summary = self._trace_summary(final_trace)
+                    else:
+                        final_full_objective = final_eval
+                finally:
+                    if hasattr(interface_prob, "set_full_evaluation_mode"):
+                        interface_prob.set_full_evaluation_mode(False)
+
+            final_payload = {
+                "mode": self.ddhs_mode,
+                "best_objective_evolution": population[0].get("objective"),
+                "final_full_objective": None if final_full_objective is None else float(final_full_objective),
+                "final_full_metric_summary": final_trace_summary if self.log_trace_summary else {},
+            }
+            final_path = os.path.join(self.output_path, "results", "final_full_evaluation.json")
+            with open(final_path, "w", encoding="utf-8") as fh:
+                json.dump(final_payload, fh, indent=2)
 

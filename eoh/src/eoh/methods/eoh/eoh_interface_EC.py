@@ -66,7 +66,7 @@ class InterfaceEC():
         population = []
 
         for i in range(n_create):
-            _,pop = self.get_algorithm([],'i1')
+            _,pop = self.get_algorithm([], 'i1', generation_idx=0)
             for p in pop:
                 population.append(p)
              
@@ -86,6 +86,7 @@ class InterfaceEC():
                     'objective': None,
                     'other_inf': None,
                     'trace': None,
+                    'operator': 'seed',
                 }
 
                 trace = None
@@ -106,41 +107,42 @@ class InterfaceEC():
         return population
     
 
-    def _get_alg(self,pop,operator):
+    def _get_alg(self,pop,operator,generation_idx=None):
         offspring = {
             'algorithm': None,
             'code': None,
             'objective': None,
             'other_inf': None,
             'trace': None,
+            'operator': operator,
         }
         if operator == "i1":
             parents = None
-            [offspring['code'],offspring['algorithm']] =  self.evol.i1()            
+            [offspring['code'],offspring['algorithm']] =  self.evol.i1(generation_idx=generation_idx, operator_name=operator)
         elif operator == "e1":
             parents = self.select.parent_selection(pop,self.m)
-            [offspring['code'],offspring['algorithm']] = self.evol.e1(parents)
+            [offspring['code'],offspring['algorithm']] = self.evol.e1(parents, generation_idx=generation_idx, operator_name=operator)
         elif operator == "e2":
             parents = self.select.parent_selection(pop,self.m)
-            [offspring['code'],offspring['algorithm']] = self.evol.e2(parents) 
+            [offspring['code'],offspring['algorithm']] = self.evol.e2(parents, generation_idx=generation_idx, operator_name=operator)
         elif operator == "m1":
             parents = self.select.parent_selection(pop,1)
-            [offspring['code'],offspring['algorithm']] = self.evol.m1(parents[0])   
+            [offspring['code'],offspring['algorithm']] = self.evol.m1(parents[0], generation_idx=generation_idx, operator_name=operator)
         elif operator == "m2":
             parents = self.select.parent_selection(pop,1)
-            [offspring['code'],offspring['algorithm']] = self.evol.m2(parents[0]) 
+            [offspring['code'],offspring['algorithm']] = self.evol.m2(parents[0], generation_idx=generation_idx, operator_name=operator)
         elif operator == "m3":
             parents = self.select.parent_selection(pop,1)
-            [offspring['code'],offspring['algorithm']] = self.evol.m3(parents[0]) 
+            [offspring['code'],offspring['algorithm']] = self.evol.m3(parents[0], generation_idx=generation_idx, operator_name=operator)
         else:
             print(f"Evolution operator [{operator}] has not been implemented ! \n") 
 
         return parents, offspring
 
-    def get_offspring(self, pop, operator):
+    def get_offspring(self, pop, operator, generation_idx=None):
 
         try:
-            p, offspring = self._get_alg(pop, operator)
+            p, offspring = self._get_alg(pop, operator, generation_idx=generation_idx)
             
             if self.use_numba:
                 
@@ -163,7 +165,7 @@ class InterfaceEC():
                 if self.debug:
                     print("duplicated code, wait 1 second and retrying ... ")
                     
-                p, offspring = self._get_alg(pop, operator)
+                p, offspring = self._get_alg(pop, operator, generation_idx=generation_idx)
 
                 if self.use_numba:
                     # Regular expression pattern to match function definitions
@@ -205,6 +207,7 @@ class InterfaceEC():
                 'objective': None,
                 'other_inf': None,
                 'trace': None,
+                'operator': operator,
             }
             p = None
 
@@ -229,10 +232,13 @@ class InterfaceEC():
     #     return result
 
     
-    def get_algorithm(self, pop, operator):
+    def get_algorithm(self, pop, operator, generation_idx=None):
         results = []
         try:
-            results = Parallel(n_jobs=self.n_p,timeout=self.timeout+15)(delayed(self.get_offspring)(pop, operator) for _ in range(self.pop_size))
+            results = Parallel(n_jobs=self.n_p,timeout=self.timeout+15)(
+                delayed(self.get_offspring)(pop, operator, generation_idx)
+                for _ in range(self.pop_size)
+            )
         except Exception as e:
             if self.debug:
                 print(f"Error: {e}")

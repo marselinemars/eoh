@@ -41,6 +41,12 @@ class Paras():
         self.mode = "baseline"  # ['baseline', 'ddhs', 'ddhs_shuffle']
         self.use_ddhs = False
         self.ddhs_shuffle = False
+        self.eval_instances_per_gen = 512
+        self.final_full_evaluation = True
+        self.log_trace_summary = True
+        self.log_exemplars = False
+        self.log_llm_interactions = False
+        self.log_full_population = False
         
         #####################
         ###  Evaluation settings  ###
