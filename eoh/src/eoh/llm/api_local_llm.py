@@ -16,7 +16,7 @@ class InterfaceLocalLLM:
             try:
                 response = self._do_request(content)
                 return response
-            except Exception:
+            except:
                 continue
 
     def _do_request(self, content: str) -> str:
@@ -36,24 +36,7 @@ class InterfaceLocalLLM:
         }
         headers = {'Content-Type': 'application/json'}
         response = requests.post(self._url, data=json.dumps(data), headers=headers)
-        if response.status_code != 200:
-            raise RuntimeError(f"Local LLM request failed ({response.status_code}): {response.text[:300]}")
-
-        payload = response.json()
-        content_field = payload.get('content')
-        if isinstance(content_field, list) and len(content_field) > 0:
-            return str(content_field[0])
-        if isinstance(content_field, str):
-            return content_field
-
-        choices = payload.get('choices')
-        if isinstance(choices, list) and len(choices) > 0:
-            first = choices[0]
-            if isinstance(first, dict):
-                msg = first.get('message')
-                if isinstance(msg, dict) and isinstance(msg.get('content'), str):
-                    return msg['content']
-                if isinstance(first.get('text'), str):
-                    return first['text']
-
-        raise RuntimeError("Unsupported local LLM response schema: expected content/choices.")
+        print(response)
+        if response.status_code == 200:
+            response = response.json()['content'][0]
+            return response
