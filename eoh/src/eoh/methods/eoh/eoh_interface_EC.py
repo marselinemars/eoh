@@ -26,7 +26,6 @@ class InterfaceEC():
         
         self.timeout = timeout
         self.use_numba = use_numba
-        self.failure_objective = 1e9
         
     def code2file(self,code):
         with open("./ael_alg.py", "w") as file:
@@ -94,7 +93,7 @@ class InterfaceEC():
                 fit_i = fitness[i]
                 if isinstance(fit_i, tuple) and len(fit_i) == 2:
                     fit_i, trace = fit_i
-                obj = self.failure_objective if fit_i is None else np.array(fit_i)
+                obj = np.array(fit_i)
                 seed_alg['objective'] = np.round(obj, 5)
                 seed_alg['trace'] = trace
                 population.append(seed_alg)
@@ -194,8 +193,6 @@ class InterfaceEC():
                     fitness, trace = fitness_result
                 else:
                     fitness = fitness_result
-                if fitness is None:
-                    fitness = self.failure_objective
                 offspring['objective'] = np.round(fitness, 5)
                 offspring['trace'] = trace
                 future.cancel()        
@@ -203,12 +200,11 @@ class InterfaceEC():
                 
 
         except Exception as e:
-            print(f"Warning: offspring generation/evaluation failed for operator [{operator}]: {e}")
 
             offspring = {
-                'algorithm': "INVALID_OFFSPRING",
-                'code': "import numpy as np\ndef score(item, bins):\n    return -bins",
-                'objective': np.round(self.failure_objective, 5),
+                'algorithm': None,
+                'code': None,
+                'objective': None,
                 'other_inf': None,
                 'trace': None,
                 'operator': operator,
