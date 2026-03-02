@@ -1,7 +1,5 @@
 import re
 import time
-import json
-import os
 from ...llm.interface_LLM import InterfaceLLM
 
 class Evolution():
@@ -32,33 +30,8 @@ class Evolution():
         self.model_LLM = model_LLM
         self.debug_mode = debug_mode # close prompt checking
 
-        self.log_llm_interactions = bool(kwargs.get("log_llm_interactions", False))
-        self.llm_log_dir = kwargs.get("llm_log_dir", None)
-        self._llm_log_counter = 0
-        if self.log_llm_interactions and self.llm_log_dir:
-            os.makedirs(self.llm_log_dir, exist_ok=True)
 
         self.interface_llm = InterfaceLLM(self.api_endpoint, self.api_key, self.model_LLM,llm_use_local,llm_local_url, self.debug_mode)
-
-    def _save_llm_interaction(self, prompt_text, raw_response, parsed_algorithm, parsed_code, generation_idx, operator_name):
-        if (not self.log_llm_interactions) or (not self.llm_log_dir):
-            return
-        generation_id = 0 if generation_idx is None else int(generation_idx)
-        op_name = "unknown" if operator_name is None else str(operator_name)
-        base_name = f"generation_{generation_id}_operator_{op_name}"
-        file_path = os.path.join(self.llm_log_dir, f"{base_name}.json")
-        while os.path.exists(file_path):
-            self._llm_log_counter += 1
-            file_path = os.path.join(self.llm_log_dir, f"{base_name}_{self._llm_log_counter}.json")
-
-        payload = {
-            "prompt": prompt_text,
-            "response": raw_response,
-            "parsed_algorithm": parsed_algorithm,
-            "parsed_code": parsed_code,
-        }
-        with open(file_path, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, ensure_ascii=True)
 
     def get_prompt_i1(self):
         
@@ -145,7 +118,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         return prompt_content
 
 
-    def _get_alg(self,prompt_content, generation_idx=None, operator_name=None):
+    def _get_alg(self,prompt_content):
 
         response = self.interface_llm.get_response(prompt_content)
 
@@ -191,19 +164,11 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         code_all = code+" "+", ".join(s for s in self.prompt_func_outputs) 
 
-        self._save_llm_interaction(
-            prompt_text=prompt_content,
-            raw_response=response,
-            parsed_algorithm=algorithm,
-            parsed_code=code_all,
-            generation_idx=generation_idx,
-            operator_name=operator_name,
-        )
 
         return [code_all, algorithm]
 
 
-    def i1(self, generation_idx=None, operator_name="i1"):
+    def i1(self):
 
         prompt_content = self.get_prompt_i1()
 
@@ -212,7 +177,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content, generation_idx=generation_idx, operator_name=operator_name)
+        [code_all, algorithm] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -222,7 +187,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def e1(self,parents, generation_idx=None, operator_name="e1"):
+    def e1(self,parents):
       
         prompt_content = self.get_prompt_e1(parents)
 
@@ -231,7 +196,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content, generation_idx=generation_idx, operator_name=operator_name)
+        [code_all, algorithm] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -241,7 +206,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def e2(self,parents, generation_idx=None, operator_name="e2"):
+    def e2(self,parents):
       
         prompt_content = self.get_prompt_e2(parents)
 
@@ -250,7 +215,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content, generation_idx=generation_idx, operator_name=operator_name)
+        [code_all, algorithm] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -260,7 +225,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def m1(self,parents, generation_idx=None, operator_name="m1"):
+    def m1(self,parents):
       
         prompt_content = self.get_prompt_m1(parents)
 
@@ -269,7 +234,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content, generation_idx=generation_idx, operator_name=operator_name)
+        [code_all, algorithm] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -279,7 +244,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def m2(self,parents, generation_idx=None, operator_name="m2"):
+    def m2(self,parents):
       
         prompt_content = self.get_prompt_m2(parents)
 
@@ -288,7 +253,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content, generation_idx=generation_idx, operator_name=operator_name)
+        [code_all, algorithm] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
@@ -298,7 +263,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
 
         return [code_all, algorithm]
     
-    def m3(self,parents, generation_idx=None, operator_name="m3"):
+    def m3(self,parents):
       
         prompt_content = self.get_prompt_m3(parents)
 
@@ -307,7 +272,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             print(">>> Press 'Enter' to continue")
             input()
       
-        [code_all, algorithm] = self._get_alg(prompt_content, generation_idx=generation_idx, operator_name=operator_name)
+        [code_all, algorithm] = self._get_alg(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check designed algorithm: \n", algorithm)
