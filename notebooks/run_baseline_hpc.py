@@ -40,6 +40,16 @@ def main():
         pop_size = int(os.getenv("EOH_POP_SIZE", "3"))
         n_generations = int(os.getenv("EOH_N_GENERATIONS", "2"))
         n_proc = int(os.getenv("EOH_N_PROC", "1"))
+        eval_cap_raw = os.getenv("EOH_EVAL_INSTANCES_PER_GEN", "")
+        eval_cap = int(eval_cap_raw) if eval_cap_raw.strip() else None
+        run_mode = os.getenv("EOH_MODE", "baseline")
+        log_full_population = os.getenv("EOH_LOG_FULL_POP", "0") == "1"
+        route_eps = float(os.getenv("EOH_ROUTE_EPS", "0.0001"))
+        route_k = int(os.getenv("EOH_ROUTE_K", "3"))
+        route_invalid = float(os.getenv("EOH_ROUTE_INVALID", "0.5"))
+
+        print("EOH_MODE:", run_mode)
+        print("EOH_EVAL_INSTANCES_PER_GEN:", eval_cap)
 
         paras = Paras()
         paras.set_paras(
@@ -53,6 +63,12 @@ def main():
             exp_n_proc=n_proc,
             exp_output_path=output_path,
             exp_debug_mode=False,
+            eval_instances_per_gen=eval_cap,
+            eoh_mode=run_mode,
+            log_full_population=log_full_population,
+            route_improvement_epsilon=route_eps,
+            route_stagnation_k=route_k,
+            route_invalid_rate_threshold=route_invalid,
         )
 
         runner = eoh.EVOL(paras)

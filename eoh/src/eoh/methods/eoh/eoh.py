@@ -2,6 +2,8 @@ import numpy as np
 import json
 import random
 import time
+import os
+import hashlib
 
 from .eoh_interface_EC import InterfaceEC
 # main class for eoh
@@ -58,6 +60,17 @@ class EOH:
 
         self.use_numba = paras.eva_numba_decorator
 
+        self.mode = getattr(paras, "eoh_mode", "baseline")
+        if self.mode not in ["baseline", "routed"]:
+            print(f"Unknown eoh_mode={self.mode}, fallback to baseline.")
+            self.mode = "baseline"
+        self.route_improvement_epsilon = float(getattr(paras, "route_improvement_epsilon", 1e-4))
+        self.route_stagnation_k = int(getattr(paras, "route_stagnation_k", 3))
+        self.route_invalid_rate_threshold = float(getattr(paras, "route_invalid_rate_threshold", 0.5))
+        self.route_use_diversity = bool(getattr(paras, "route_use_diversity", True))
+        self.log_full_population = bool(getattr(paras, "log_full_population", False))
+        self.run_log_path = os.path.join(self.output_path, "results", "run_log.jsonl")
+
         print("- EoH parameters loaded -")
 
         # Set a random seed
@@ -72,6 +85,88 @@ class EOH:
                         print("duplicated result, retrying ... ")
             population.append(off)
     
+    def _prepare_run_log(self):
+        os.makedirs(os.path.dirname(self.run_log_path), exist_ok=True)
+        with open(self.run_log_path, "w", encoding="utf-8") as _:
+            pass
+
+    def _write_run_log(self, record):
+        with open(self.run_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _code_hash(self, code):
+        if code is None:
+            return None
+        return hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
+
+    def _compact_individual(self, individual):
+        return {
+            "objective": individual.get("objective"),
+            "code_hash": self._code_hash(individual.get("code")),
+        }
+
+    def _serialize_population(self, population):
+        if self.log_full_population:
+            return population
+        return [self._compact_individual(individual) for individual in population]
+
+    def _serialize_best(self, population):
+        if len(population) == 0:
+            return {}
+        if self.log_full_population:
+            return population[0]
+        return self._compact_individual(population[0])
+
+    def _save_population(self, population, generation):
+        pop_path = os.path.join(self.output_path, "results", "pops", f"population_generation_{generation}.json")
+        best_path = os.path.join(self.output_path, "results", "pops_best", f"population_generation_{generation}.json")
+        with open(pop_path, "w", encoding="utf-8") as f:
+            json.dump(self._serialize_population(population), f, indent=2)
+        with open(best_path, "w", encoding="utf-8") as f:
+            json.dump(self._serialize_best(population), f, indent=2)
+
+    def _invalid_rate(self, offspring_list):
+        if len(offspring_list) == 0:
+            return 1.0
+        invalid_count = 0
+        for offspring in offspring_list:
+            if offspring is None:
+                invalid_count += 1
+                continue
+            if offspring.get("objective") is None or offspring.get("code") is None:
+                invalid_count += 1
+        return invalid_count / len(offspring_list)
+
+    def _population_diversity(self, population):
+        if not self.route_use_diversity:
+            return None
+        hashes = set()
+        for individual in population:
+            code_hash = self._code_hash(individual.get("code"))
+            if code_hash is not None:
+                hashes.add(code_hash)
+        return len(hashes)
+
+    def _diagnose(self, last_improved, stagnation_count, last_invalid_rate):
+        if last_invalid_rate > self.route_invalid_rate_threshold:
+            return "TOO_MANY_INVALIDS"
+        if last_improved:
+            return "IMPROVING"
+        if stagnation_count >= self.route_stagnation_k:
+            return "STAGNATING"
+        return "DEFAULT"
+
+    def _route_operator(self, diagnosis_label):
+        route_map = {
+            "IMPROVING": "e1",
+            "STAGNATING": "m2",
+            "TOO_MANY_INVALIDS": "m1",
+            "DEFAULT": "e2",
+        }
+        op = route_map.get(diagnosis_label, self.operators[0])
+        if op not in self.operators:
+            op = self.operators[0]
+        return op
 
     # run eoh 
     def run(self):
@@ -92,15 +187,15 @@ class EOH:
                                    timeout = self.timeout, use_numba=self.use_numba
                                    )
 
+        self._prepare_run_log()
+
         # initialization
         population = []
         if self.use_seed:
             with open(self.seed_path) as file:
                 data = json.load(file)
             population = interface_ec.population_generation_seed(data,self.exp_n_proc)
-            filename = self.output_path + "/results/pops/population_generation_0.json"
-            with open(filename, 'w') as f:
-                json.dump(population, f, indent=5)
+            self._save_population(population, 0)
             n_start = 0
         else:
             if self.load_pop:  # load population from files
@@ -132,50 +227,86 @@ class EOH:
                     print(" Obj: ", off['objective'], end="|")
                 print()
                 print("initial population has been created!")
-                # Save population to a file
-                filename = self.output_path + "/results/pops/population_generation_0.json"
-                with open(filename, 'w') as f:
-                    json.dump(population, f, indent=5)
+                self._save_population(population, 0)
                 n_start = 0
 
         # main loop
         n_op = len(self.operators)
+        prev_best = population[0]["objective"] if len(population) > 0 else None
+        stagnation_count = 0
+        last_invalid_rate = 0.0
+        last_improved = False
 
-        for pop in range(n_start, self.n_pop):  
-            #print(f" [{na + 1} / {self.pop_size}] ", end="|")         
-            for i in range(n_op):
-                op = self.operators[i]
-                print(f" OP: {op}, [{i + 1} / {n_op}] ", end="|") 
-                op_w = self.operator_weights[i]
-                if (np.random.rand() < op_w):
-                    parents, offsprings = interface_ec.get_algorithm(population, op)
-                self.add2pop(population, offsprings)  # Check duplication, and add the new offspring
+        for pop in range(n_start, self.n_pop):
+            generation_offspring = []
+            chosen_operator = None
+            diagnosis_label = "DEFAULT"
+
+            if self.mode == "routed":
+                diagnosis_label = self._diagnose(last_improved, stagnation_count, last_invalid_rate)
+                chosen_operator = self._route_operator(diagnosis_label)
+                print(f" OP: {chosen_operator}, [routed] ", end="|")
+                _, offsprings = interface_ec.get_algorithm(population, chosen_operator)
+                self.add2pop(population, offsprings)
+                generation_offspring.extend(offsprings)
                 for off in offsprings:
-                    print(" Obj: ", off['objective'], end="|")
-                # if is_add:
-                #     data = {}
-                #     for i in range(len(parents)):
-                #         data[f"parent{i + 1}"] = parents[i]
-                #     data["offspring"] = offspring
-                #     with open(self.output_path + "/results/history/pop_" + str(pop + 1) + "_" + str(
-                #             na) + "_" + op + ".json", "w") as file:
-                #         json.dump(data, file, indent=5)
-                # populatin management
+                    print(" Obj: ", off["objective"], end="|")
                 size_act = min(len(population), self.pop_size)
                 population = self.manage.population_management(population, size_act)
                 print()
+            else:
+                chosen_operator = "schedule:" + ",".join(self.operators)
+                for i in range(n_op):
+                    op = self.operators[i]
+                    print(f" OP: {op}, [{i + 1} / {n_op}] ", end="|")
+                    op_w = self.operator_weights[i]
+                    offsprings = []
+                    if np.random.rand() < op_w:
+                        _, offsprings = interface_ec.get_algorithm(population, op)
+                    self.add2pop(population, offsprings)
+                    generation_offspring.extend(offsprings)
+                    for off in offsprings:
+                        print(" Obj: ", off["objective"], end="|")
+                    size_act = min(len(population), self.pop_size)
+                    population = self.manage.population_management(population, size_act)
+                    print()
 
+            self._save_population(population, pop + 1)
 
-            # Save population to a file
-            filename = self.output_path + "/results/pops/population_generation_" + str(pop + 1) + ".json"
-            with open(filename, 'w') as f:
-                json.dump(population, f, indent=5)
+            invalid_rate = self._invalid_rate(generation_offspring)
+            diversity = self._population_diversity(population)
+            best_fitness = population[0]["objective"] if len(population) > 0 else None
 
-            # Save the best one to a file
-            filename = self.output_path + "/results/pops_best/population_generation_" + str(pop + 1) + ".json"
-            with open(filename, 'w') as f:
-                json.dump(population[0], f, indent=5)
+            if prev_best is None and best_fitness is not None:
+                last_improved = True
+                stagnation_count = 0
+                prev_best = best_fitness
+            elif best_fitness is None:
+                last_improved = False
+                stagnation_count += 1
+            else:
+                improvement = prev_best - best_fitness
+                if improvement > self.route_improvement_epsilon:
+                    last_improved = True
+                    stagnation_count = 0
+                    prev_best = best_fitness
+                else:
+                    last_improved = False
+                    stagnation_count += 1
+                    prev_best = min(prev_best, best_fitness)
 
+            last_invalid_rate = invalid_rate
+            run_record = {
+                "gen": int(pop + 1),
+                "mode": self.mode,
+                "best_fitness": best_fitness,
+                "chosen_operator": chosen_operator,
+                "diagnosis_label": diagnosis_label,
+                "invalid_rate": invalid_rate,
+                "stagnation_count": int(stagnation_count),
+                "diversity": diversity,
+            }
+            self._write_run_log(run_record)
 
             print(f"--- {pop + 1} of {self.n_pop} populations finished. Time Cost:  {((time.time()-time_start)/60):.1f} m")
             print("Pop Objs: ", end=" ")

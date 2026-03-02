@@ -7,10 +7,24 @@ import warnings
 import sys
 
 class BPONLINE():
-    def __init__(self):
+    def __init__(self, paras=None):
         getdate = GetData()
         self.instances, self.lb = getdate.get_instances()
         self.prompts = GetPrompts()
+        self.eval_instances_per_gen = None
+        if paras is not None:
+            self.eval_instances_per_gen = getattr(paras, "eval_instances_per_gen", None)
+
+    def _select_instances(self, dataset_items):
+        if self.eval_instances_per_gen is None:
+            return dataset_items
+        try:
+            cap = int(self.eval_instances_per_gen)
+        except (TypeError, ValueError):
+            return dataset_items
+        if cap <= 0:
+            return dataset_items
+        return dataset_items[:cap]
 
     def get_valid_bin_indices(self,item: float, bins: np.ndarray) -> np.ndarray:
         """Returns indices of bins in which item can fit."""
@@ -52,7 +66,9 @@ class BPONLINE():
 
         for name, dataset in self.instances.items():
             num_bins_list = []
-            for _, instance in dataset.items():
+            dataset_items = list(dataset.items())
+            selected_items = self._select_instances(dataset_items)
+            for _, instance in selected_items:
 
                 capacity = instance['capacity']
                 items = np.array(instance['items'])

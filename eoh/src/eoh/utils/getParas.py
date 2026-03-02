@@ -44,6 +44,17 @@ class Paras():
         #####################
         self.eva_timeout = 30
         self.eva_numba_decorator = False
+        self.eval_instances_per_gen = None
+
+        #####################
+        ###  Run mode / logging ###
+        #####################
+        self.eoh_mode = "baseline"  # baseline | routed
+        self.route_improvement_epsilon = 1e-4
+        self.route_stagnation_k = 3
+        self.route_invalid_rate_threshold = 0.5
+        self.route_use_diversity = True
+        self.log_full_population = False
 
 
     def set_parallel(self):
