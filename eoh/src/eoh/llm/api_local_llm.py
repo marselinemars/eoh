@@ -13,6 +13,7 @@ class InterfaceLocalLLM:
         self._url = url  # 'http://127.0.0.1:11045/completions'
         self._timeout_s = int(os.getenv("EOH_LOCAL_LLM_TIMEOUT_S", "180"))
         self._retry_sleep_s = float(os.getenv("EOH_LOCAL_LLM_RETRY_SLEEP_S", "1.0"))
+        self._do_sample = os.getenv("EOH_LOCAL_LLM_DO_SAMPLE", "0") == "1"
         self._temperature = float(os.getenv("EOH_LOCAL_LLM_TEMPERATURE", "0.2"))
         self._top_p = float(os.getenv("EOH_LOCAL_LLM_TOP_P", "0.95"))
         self._max_new_tokens = int(os.getenv("EOH_LOCAL_LLM_MAX_NEW_TOKENS", "1200"))
@@ -36,7 +37,7 @@ class InterfaceLocalLLM:
             'prompt': content,
             'repeat_prompt': 1,
             'params': {
-                'do_sample': True,
+                'do_sample': self._do_sample,
                 'temperature': self._temperature,
                 'top_k': None,
                 'top_p': self._top_p,

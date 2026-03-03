@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import threading
+import re
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -90,6 +91,7 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
     bridge_max_tokens = int(os.getenv("EOH_BRIDGE_MAX_TOKENS", "1200"))
     bridge_system_message = os.getenv("EOH_BRIDGE_SYSTEM_MESSAGE", DEFAULT_BRIDGE_SYSTEM_MESSAGE)
     disable_thinking = os.getenv("EOH_BRIDGE_DISABLE_THINKING", "1") == "1"
+    repair_retries = int(os.getenv("EOH_BRIDGE_REPAIR_RETRIES", "1"))
 
     class BridgeHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -102,6 +104,42 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _extract_description(self, text: str):
+            m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+            return m.group(0).strip() if m else None
+
+        def _extract_code(self, text: str):
+            code_blocks = re.findall(r"```(?:python|py)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+            for block in code_blocks:
+                if "def score" in block:
+                    return block.strip()
+            if code_blocks:
+                return code_blocks[0].strip()
+            m = re.search(r"(import[\s\S]*?def\s+score\s*\(.*)", text, re.DOTALL)
+            if m:
+                return m.group(1).strip()
+            m = re.search(r"(def\s+score\s*\(.*)", text, re.DOTALL)
+            if m:
+                return m.group(1).strip()
+            return None
+
+        def _looks_valid_final(self, text: str):
+            t = text or ""
+            return ("def score" in t) and ("{" in t and "}" in t)
+
+        def _sanitize_to_final(self, text: str):
+            if not isinstance(text, str):
+                return ""
+            desc = self._extract_description(text)
+            code = self._extract_code(text)
+            if code is None:
+                return text.strip()
+            parts = []
+            if desc:
+                parts.append(desc)
+            parts.append(code)
+            return "\n".join(parts).strip()
 
         def do_POST(self):
             if self.path != "/completions":
@@ -155,6 +193,40 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                     data = r.json()
                     text = data.get("choices", [{}])[0].get("message", {}).get("content")
                     if isinstance(text, str) and text:
+                        text = self._sanitize_to_final(text)
+                        if not self._looks_valid_final(text):
+                            for _ in range(repair_retries):
+                                repair_prompt = (
+                                    "Rewrite the following draft into final output ONLY:\n"
+                                    "1) one short sentence in braces {...}\n"
+                                    "2) valid Python code defining score(item, bins) and returning scores\n"
+                                    "No reasoning text.\n\nDraft:\n"
+                                    f"{text}"
+                                )
+                                repair_payload = {
+                                    "model": model_id,
+                                    "messages": [
+                                        {"role": "system", "content": bridge_system_message},
+                                        {"role": "user", "content": repair_prompt},
+                                    ],
+                                    "temperature": 0.0,
+                                    "max_tokens": max_new_tokens,
+                                }
+                                if disable_thinking:
+                                    repair_payload["thinking"] = False
+                                    repair_payload["chat_template_kwargs"] = {"enable_thinking": False}
+                                rr = requests.post(
+                                    f"{base_url}/chat/completions",
+                                    headers=headers,
+                                    json=repair_payload,
+                                    timeout=600,
+                                )
+                                if rr.status_code == 200:
+                                    rd = rr.json()
+                                    rtext = rd.get("choices", [{}])[0].get("message", {}).get("content", "")
+                                    text = self._sanitize_to_final(rtext)
+                                    if self._looks_valid_final(text):
+                                        break
                         self._send(200, {"content": [text]})
                         return
 
@@ -195,6 +267,7 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
 
                 data2 = r2.json()
                 text2 = data2.get("choices", [{}])[0].get("text", "")
+                text2 = self._sanitize_to_final(text2)
                 self._send(200, {"content": [text2]})
             except Exception as exc:
                 self._send(500, {"error": str(exc)})

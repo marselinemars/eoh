@@ -44,6 +44,19 @@ class Evolution():
         if self.log_parse_events:
             self.llm_io_dir.mkdir(parents=True, exist_ok=True)
 
+    def _strict_output_rules(self):
+        return (
+            "STRICT OUTPUT FORMAT (MANDATORY):\n"
+            "1) First line: one sentence wrapped in braces like {your sentence}.\n"
+            "2) Then output ONLY Python code (no markdown fences).\n"
+            "3) Code must include: import numpy as np\n"
+            f"4) Code must define exactly one function named {self.prompt_func_name}.\n"
+            f"5) Function inputs must be exactly: ({', '.join(self.prompt_func_inputs)}).\n"
+            f"6) Function must return: {', '.join(self.prompt_func_outputs)}.\n"
+            "7) Do NOT output 'Thinking Process', analysis, explanations, bullet points, or prose.\n"
+            "8) Do NOT output anything before the brace line or after the Python code.\n"
+        )
+
     def _log_parse_event(self, event, **fields):
         if not self.log_parse_events:
             return
@@ -65,7 +78,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
-+self.prompt_other_inf+"\n"+"Do not give additional explanations."
++self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
 
         
@@ -83,7 +96,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
-+self.prompt_other_inf+"\n"+"Do not give additional explanations."
++self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
     
     def get_prompt_e2(self,indivs):
@@ -100,7 +113,7 @@ The description must be inside a brace. Thirdly, implement it in Python as a fun
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
-+self.prompt_other_inf+"\n"+"Do not give additional explanations."
++self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
     
     def get_prompt_m1(self,indiv1):
@@ -115,7 +128,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
-+self.prompt_other_inf+"\n"+"Do not give additional explanations."
++self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
     
     def get_prompt_m2(self,indiv1):
@@ -130,7 +143,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
-+self.prompt_other_inf+"\n"+"Do not give additional explanations."
++self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
     
     def get_prompt_m3(self,indiv1):
@@ -138,7 +151,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
 Next, analyze whether any of these components can be overfit to the in-distribution instances. \
 Then, based on your analysis, simplify the components to enhance the generalization to potential out-of-distribution instances. \
 Finally, provide the revised code, keeping the function name, inputs, and outputs unchanged. \n"+indiv1['code']+"\n"\
-+self.prompt_inout_inf+"\n"+"Do not give additional explanations."
++self.prompt_inout_inf+"\n"+self._strict_output_rules()
         return prompt_content
 
 
