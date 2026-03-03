@@ -5,6 +5,7 @@ from .prompts import GetPrompts
 import types
 import warnings
 import sys
+import os
 
 class BPONLINE():
     def __init__(self, paras=None):
@@ -137,7 +138,8 @@ class BPONLINE():
 
                 return fitness
         except Exception as e:
-            #print("Error:", str(e))
+            if os.getenv("EOH_VERBOSE_EVAL_ERRORS", "1") == "1":
+                print(f"BP evaluate error: {e}")
             return None
 
 

@@ -83,6 +83,8 @@ def resolve_model_id(cfg: HPCBridgeConfig, timeout_s: int = 60) -> str:
 
 
 def _make_handler(base_url: str, api_key: str, model_id: str):
+    bridge_max_tokens = int(os.getenv("EOH_BRIDGE_MAX_TOKENS", "1200"))
+
     class BridgeHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             return
@@ -116,7 +118,7 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                     "model": model_id,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": params.get("temperature", 0.2),
-                    "max_tokens": params.get("max_new_tokens", 512),
+                    "max_tokens": params.get("max_new_tokens", bridge_max_tokens),
                 }
                 r = requests.post(
                     f"{base_url}/chat/completions",
@@ -136,7 +138,7 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                     "model": model_id,
                     "prompt": prompt,
                     "temperature": params.get("temperature", 0.2),
-                    "max_tokens": params.get("max_new_tokens", 512),
+                    "max_tokens": params.get("max_new_tokens", bridge_max_tokens),
                 }
                 r2 = requests.post(
                     f"{base_url}/completions",

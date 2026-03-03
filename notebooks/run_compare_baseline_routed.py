@@ -124,6 +124,8 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
             eoh_mode=mode,
             log_full_population=False,
         )
+        if settings.get("disable_numba", False):
+            paras.eva_numba_decorator = False
         runner = eoh.EVOL(paras)
         runner.run()
         log(f"finished mode={mode}", mode=mode, event="mode_finished")
@@ -142,6 +144,7 @@ def main():
         "n_proc": int(os.getenv("EOH_N_PROC", "1")),
         "eval_instances_per_gen": int(os.getenv("EOH_EVAL_INSTANCES_PER_GEN", "256")),
         "seed": int(os.getenv("EOH_SEED", "2024")),
+        "disable_numba": os.getenv("EOH_DISABLE_NUMBA", "1") == "1",
     }
 
     out_root = Path(os.getenv("EOH_COMPARE_OUT", "./compare_runs")).resolve()

@@ -6,6 +6,7 @@ from joblib import Parallel, delayed
 from .evaluator_accelerate import add_numba_decorator
 import re
 import concurrent.futures
+import os
 
 class InterfaceEC():
     def __init__(self, pop_size, m, api_endpoint, api_key, llm_model,llm_use_local,llm_local_url, debug_mode, interface_prob, select,n_p,timeout,use_numba,**kwargs):
@@ -26,6 +27,7 @@ class InterfaceEC():
         
         self.timeout = timeout
         self.use_numba = use_numba
+        self.max_offspring_retries = int(os.getenv("EOH_OFFSPRING_RETRIES", "4"))
         
     def code2file(self,code):
         with open("./ael_alg.py", "w") as file:
@@ -131,70 +133,65 @@ class InterfaceEC():
         return parents, offspring
 
     def get_offspring(self, pop, operator):
-
-        try:
-            p, offspring = self._get_alg(pop, operator)
-            
-            if self.use_numba:
-                
-                # Regular expression pattern to match function definitions
-                pattern = r"def\s+(\w+)\s*\(.*\):"
-
-                # Search for function definitions in the code
-                match = re.search(pattern, offspring['code'])
-
-                function_name = match.group(1)
-
-                code = add_numba_decorator(program=offspring['code'], function_name=function_name)
-            else:
-                code = offspring['code']
-
-            n_retry= 1
-            while self.check_duplicate(pop, offspring['code']):
-                
-                n_retry += 1
-                if self.debug:
-                    print("duplicated code, wait 1 second and retrying ... ")
-                    
+        last_error = None
+        for attempt in range(1, self.max_offspring_retries + 1):
+            try:
                 p, offspring = self._get_alg(pop, operator)
 
                 if self.use_numba:
-                    # Regular expression pattern to match function definitions
                     pattern = r"def\s+(\w+)\s*\(.*\):"
-
-                    # Search for function definitions in the code
                     match = re.search(pattern, offspring['code'])
-
+                    if match is None:
+                        raise RuntimeError("No function definition found in generated code.")
                     function_name = match.group(1)
-
                     code = add_numba_decorator(program=offspring['code'], function_name=function_name)
                 else:
                     code = offspring['code']
-                    
-                if n_retry > 1:
-                    break
-                
-                
-            #self.code2file(offspring['code'])
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(self.interface_eval.evaluate, code)
-                fitness = future.result(timeout=self.timeout)
+
+                n_retry = 1
+                while self.check_duplicate(pop, offspring['code']):
+                    n_retry += 1
+                    if self.debug:
+                        print("duplicated code, retrying ... ")
+                    p, offspring = self._get_alg(pop, operator)
+                    if self.use_numba:
+                        pattern = r"def\s+(\w+)\s*\(.*\):"
+                        match = re.search(pattern, offspring['code'])
+                        if match is None:
+                            raise RuntimeError("No function definition found in generated code.")
+                        function_name = match.group(1)
+                        code = add_numba_decorator(program=offspring['code'], function_name=function_name)
+                    else:
+                        code = offspring['code']
+                    if n_retry > 1:
+                        break
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(self.interface_eval.evaluate, code)
+                    fitness = future.result(timeout=self.timeout)
+                    future.cancel()
+
+                if fitness is None:
+                    raise RuntimeError("Evaluation returned None.")
+
                 offspring['objective'] = np.round(fitness, 5)
-                future.cancel()        
-                # fitness = self.interface_eval.evaluate(code)
-                
+                return p, offspring
 
-        except Exception as e:
+            except Exception as e:
+                last_error = e
+                if self.debug:
+                    print(f"offspring attempt {attempt}/{self.max_offspring_retries} failed: {e}")
+                continue
 
-            offspring = {
-                'algorithm': None,
-                'code': None,
-                'objective': None,
-                'other_inf': None
-            }
-            p = None
-
-        # Round the objective values
+        if self.debug:
+            print(f"all offspring attempts failed for operator {operator}: {last_error}")
+        offspring = {
+            'algorithm': None,
+            'code': None,
+            'objective': None,
+            'other_inf': None
+        }
+        p = None
         return p, offspring
     # def process_task(self,pop, operator):
     #     result =  None, {
