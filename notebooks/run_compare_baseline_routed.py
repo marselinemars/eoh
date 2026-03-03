@@ -90,12 +90,35 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
     mode_root.mkdir(parents=True, exist_ok=True)
     run_log_path = mode_root / "results" / "run_log.jsonl"
     pop0_path = mode_root / "results" / "pops" / "population_generation_0.json"
+    llm_io_dir = mode_root / "results" / "llm_io"
+    llm_io_path = llm_io_dir / "llm_interactions.jsonl"
+    parse_events_path = llm_io_dir / "parse_events.jsonl"
+    # Remove stale files so progress is unambiguous.
+    if run_log_path.exists():
+        run_log_path.unlink()
+    if pop0_path.exists():
+        pop0_path.unlink()
+    if llm_io_path.exists():
+        llm_io_path.unlink()
+    if parse_events_path.exists():
+        parse_events_path.unlink()
+
+    if settings.get("log_llm_io", True):
+        os.environ["EOH_LOG_LLM_IO"] = "1"
+        os.environ["EOH_LOG_PARSE_EVENTS"] = "1"
+        os.environ["EOH_LLM_IO_DIR"] = str(llm_io_dir)
+    else:
+        os.environ["EOH_LOG_LLM_IO"] = "0"
+        os.environ["EOH_LOG_PARSE_EVENTS"] = "0"
+
     log(
         f"starting mode={mode}",
         mode=mode,
         output_path=str(mode_root),
         run_log_path=str(run_log_path),
         population0_path=str(pop0_path),
+        llm_io_path=str(llm_io_path),
+        parse_events_path=str(parse_events_path),
     )
 
     stop_event = threading.Event()
@@ -145,6 +168,7 @@ def main():
         "eval_instances_per_gen": int(os.getenv("EOH_EVAL_INSTANCES_PER_GEN", "256")),
         "seed": int(os.getenv("EOH_SEED", "2024")),
         "disable_numba": os.getenv("EOH_DISABLE_NUMBA", "1") == "1",
+        "log_llm_io": os.getenv("EOH_LOG_LLM_IO", "1") == "1",
     }
 
     out_root = Path(os.getenv("EOH_COMPARE_OUT", "./compare_runs")).resolve()

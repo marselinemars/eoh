@@ -2,6 +2,9 @@ import re
 import time
 import ast
 import os
+import json
+from pathlib import Path
+from datetime import datetime
 from ...llm.interface_LLM import InterfaceLLM
 
 class Evolution():
@@ -35,6 +38,24 @@ class Evolution():
 
         self.interface_llm = InterfaceLLM(self.api_endpoint, self.api_key, self.model_LLM,llm_use_local,llm_local_url, self.debug_mode)
         self.max_parse_retries = int(os.getenv("EOH_PARSE_RETRIES", "6"))
+        self.log_parse_events = os.getenv("EOH_LOG_PARSE_EVENTS", "0") == "1"
+        self.llm_io_dir = Path(os.getenv("EOH_LLM_IO_DIR", "./results/llm_io"))
+        self.parse_log_path = self.llm_io_dir / "parse_events.jsonl"
+        if self.log_parse_events:
+            self.llm_io_dir.mkdir(parents=True, exist_ok=True)
+
+    def _log_parse_event(self, event, **fields):
+        if not self.log_parse_events:
+            return
+        record = {
+            "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "event": event,
+            "request_id": getattr(self.interface_llm, "last_request_id", None),
+            "func_name": self.prompt_func_name,
+        }
+        record.update(fields)
+        with self.parse_log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
 
     def get_prompt_i1(self):
         
@@ -197,18 +218,38 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             code_candidate = self._extract_code_block(response)
             if code_candidate is None:
                 last_err = RuntimeError("No code block detected in response.")
+                self._log_parse_event(
+                    "parse_fail",
+                    attempt=i + 1,
+                    error=str(last_err),
+                    response_preview=response[:400],
+                )
                 continue
             try:
                 code_all = self._build_valid_code(code_candidate)
+                self._log_parse_event(
+                    "parse_success",
+                    attempt=i + 1,
+                    code_chars=len(code_all),
+                    algorithm=algorithm,
+                )
                 return [code_all, algorithm]
             except Exception as exc:
                 last_err = exc
+                self._log_parse_event(
+                    "parse_fail",
+                    attempt=i + 1,
+                    error=str(exc),
+                    code_preview=code_candidate[:400],
+                    response_preview=response[:400],
+                )
                 if self.debug_mode:
                     print(f"Parse/build failure {i+1}/{self.max_parse_retries}: {exc}")
                 time.sleep(0.5)
 
         if self.debug_mode:
             print(f"Falling back to deterministic code due to parse errors: {last_err}")
+        self._log_parse_event("parse_fallback", error=str(last_err))
         return [self._fallback_code(), "Fallback valid heuristic"]
 
 
