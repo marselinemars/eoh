@@ -66,7 +66,9 @@ def _tail_run_log(run_log_path: Path, stop_event: threading.Event, log, mode: st
                         log(
                             f"{run_tag} {mode} progress: gen={rec.get('gen')} train={rec.get('train_fitness', rec.get('best_fitness'))} "
                             f"holdout={rec.get('holdout_fitness')} gap={rec.get('fitness_gap')} "
-                            f"op={rec.get('chosen_operator')} label={rec.get('diagnosis_label')}",
+                            f"op={rec.get('chosen_operator')} label={rec.get('diagnosis_label')} "
+                            f"no_improve={rec.get('no_improve_gens', rec.get('stagnation_count'))} "
+                            f"e1_cd={rec.get('e1_cooldown_remaining')}",
                             run_tag=run_tag,
                             mode=mode,
                             event="generation_progress",
@@ -76,6 +78,8 @@ def _tail_run_log(run_log_path: Path, stop_event: threading.Event, log, mode: st
                             fitness_gap=rec.get("fitness_gap"),
                             chosen_operator=rec.get("chosen_operator"),
                             diagnosis_label=rec.get("diagnosis_label"),
+                            no_improve_gens=rec.get("no_improve_gens", rec.get("stagnation_count")),
+                            e1_cooldown_remaining=rec.get("e1_cooldown_remaining"),
                         )
                     except Exception:
                         log(
@@ -243,6 +247,11 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
             eval_instances_per_gen=settings["eval_instances_per_gen"],
             holdout_instances=settings["holdout_instances"],
             holdout_eval_interval=settings["holdout_eval_interval"],
+            route_improvement_epsilon=settings["route_improvement_epsilon"],
+            route_warmup_gens=settings["route_warmup_gens"],
+            route_e1_cooldown=settings["route_e1_cooldown"],
+            route_e2_recent_k=settings["route_e2_recent_k"],
+            route_use_probabilistic=settings["route_use_probabilistic"],
             eoh_mode=mode,
             log_full_population=False,
         )
@@ -269,6 +278,11 @@ def main():
         "eval_instances_per_gen": int(os.getenv("EOH_EVAL_INSTANCES_PER_GEN", "256")),
         "holdout_instances": int(os.getenv("EOH_HOLDOUT_INSTANCES", "64")),
         "holdout_eval_interval": int(os.getenv("EOH_HOLDOUT_EVAL_INTERVAL", "1")),
+        "route_improvement_epsilon": float(os.getenv("EOH_ROUTE_IMPROVEMENT_EPS", "1e-12")),
+        "route_warmup_gens": int(os.getenv("EOH_ROUTE_WARMUP_GENS", "2")),
+        "route_e1_cooldown": int(os.getenv("EOH_ROUTE_E1_COOLDOWN", "3")),
+        "route_e2_recent_k": int(os.getenv("EOH_ROUTE_E2_RECENT_K", "3")),
+        "route_use_probabilistic": os.getenv("EOH_ROUTE_USE_PROBABILISTIC", "1") == "1",
         "disable_numba": os.getenv("EOH_DISABLE_NUMBA", "1") == "1",
         "log_llm_io": os.getenv("EOH_LOG_LLM_IO", "1") == "1",
     }

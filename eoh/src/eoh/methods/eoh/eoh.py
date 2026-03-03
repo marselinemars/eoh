@@ -65,12 +65,16 @@ class EOH:
         if self.mode not in ["baseline", "routed"]:
             print(f"Unknown eoh_mode={self.mode}, fallback to baseline.")
             self.mode = "baseline"
-        self.route_improvement_epsilon = float(getattr(paras, "route_improvement_epsilon", 1e-4))
+        self.route_improvement_epsilon = float(getattr(paras, "route_improvement_epsilon", 1e-12))
         self.route_stagnation_k = int(getattr(paras, "route_stagnation_k", 3))
         self.route_invalid_rate_threshold = float(getattr(paras, "route_invalid_rate_threshold", 0.5))
         self.route_use_diversity = bool(getattr(paras, "route_use_diversity", True))
         self.route_recent_window = int(getattr(paras, "route_recent_window", 3))
         self.route_structural_plateau_eps = float(getattr(paras, "route_structural_plateau_eps", 1e-5))
+        self.route_warmup_gens = max(0, int(getattr(paras, "route_warmup_gens", 2)))
+        self.route_e1_cooldown = max(0, int(getattr(paras, "route_e1_cooldown", 3)))
+        self.route_e2_recent_k = max(1, int(getattr(paras, "route_e2_recent_k", 3)))
+        self.route_use_probabilistic = bool(getattr(paras, "route_use_probabilistic", True))
         self.holdout_eval_interval = max(1, int(getattr(paras, "holdout_eval_interval", 1)))
         self.log_full_population = bool(getattr(paras, "log_full_population", False))
         self.run_log_path = os.path.join(self.output_path, "results", "run_log.jsonl")
@@ -199,6 +203,24 @@ class EOH:
                     return op
         return self.operators[0]
 
+    def _sample_operator(self, distribution, fallback_order):
+        candidates = []
+        for op, weight in distribution.items():
+            if op in self.operators and float(weight) > 0.0:
+                candidates.append((op, float(weight)))
+        if len(candidates) == 0:
+            preferred = fallback_order[0] if len(fallback_order) > 0 else self.operators[0]
+            fallbacks = fallback_order[1:] if len(fallback_order) > 1 else None
+            return self._choose_available_operator(preferred, fallbacks=fallbacks)
+        total = sum(weight for _, weight in candidates)
+        draw = random.random() * total
+        cum = 0.0
+        for op, weight in candidates:
+            cum += weight
+            if draw <= cum:
+                return op
+        return candidates[-1][0]
+
     def _should_structural_edit(self, no_improve_gens, recent_ops, recent_deltas, diversity, code_length_growth):
         if no_improve_gens < 2:
             return False
@@ -213,6 +235,19 @@ class EOH:
         low_diversity = (diversity is not None) and (diversity <= max(2, self.pop_size // 2))
         code_is_growing = (code_length_growth is not None) and (code_length_growth > 0.0)
         return (m2_recent_count >= 2) and no_gain_on_m2 and (low_diversity or code_is_growing)
+
+    def _can_try_e1_in_gn(self, no_improve_gens, recent_ops, current_best, best_at_last_e2):
+        if no_improve_gens < 4:
+            return False
+        e2_recent = any(op == "e2" for op in recent_ops[-self.route_e2_recent_k:])
+        if not e2_recent:
+            return False
+        if current_best is None or best_at_last_e2 is None:
+            return True
+        best_has_not_improved_since_last_e2 = not (
+            current_best < (best_at_last_e2 - self.route_improvement_epsilon)
+        )
+        return best_has_not_improved_since_last_e2
 
     def _diagnose_routed(
         self,
@@ -240,18 +275,63 @@ class EOH:
             return "NEED_GLOBAL_NOVELTY"
         return "NEED_BACKBONE_VARIANT"
 
-    def _route_operator(self, diagnosis_label):
-        route_map = {
-            "NEED_PARAM_TUNING": "m2",
-            "NEED_STRUCTURAL_EDIT": "m1",
-            "NEED_BACKBONE_VARIANT": "e2",
-            "NEED_GLOBAL_NOVELTY": "e1",
-            "OVERFIT_RISK": "m3",
-        }
-        preferred = route_map.get(diagnosis_label, "e2")
-        if preferred == "m3":
-            return self._choose_available_operator("m3", fallbacks=["m1", "e1", "e2", "m2"])
-        return self._choose_available_operator(preferred, fallbacks=["e2", "m2", "m1", "e1"])
+    def _route_operator(
+        self,
+        diagnosis_label,
+        generation_index,
+        no_improve_gens,
+        recent_ops,
+        current_best,
+        best_at_last_e2,
+        e1_cooldown_remaining,
+    ):
+        # Warmup: stabilize early search on the strongest observed operator.
+        if (generation_index + 1) <= self.route_warmup_gens:
+            return self._choose_available_operator("e2", fallbacks=["m1", "m2", "e1"])
+
+        if diagnosis_label == "OVERFIT_RISK":
+            return self._choose_available_operator("m3", fallbacks=["m1", "e2", "m2", "e1"])
+
+        # Cooldown: prevent repeated global novelty collapse.
+        if e1_cooldown_remaining > 0:
+            return self._choose_available_operator("e2", fallbacks=["m1", "m2", "e1"])
+
+        if diagnosis_label == "NEED_PARAM_TUNING":
+            if self.route_use_probabilistic:
+                return self._sample_operator(
+                    {"m2": 0.7, "m1": 0.3},
+                    fallback_order=["m2", "m1", "e2", "e1"],
+                )
+            return self._choose_available_operator("m2", fallbacks=["m1", "e2", "e1"])
+
+        if diagnosis_label == "NEED_STRUCTURAL_EDIT":
+            return self._choose_available_operator("m1", fallbacks=["e2", "m2", "e1"])
+
+        if diagnosis_label == "NEED_BACKBONE_VARIANT":
+            if self.route_use_probabilistic:
+                return self._sample_operator(
+                    {"e2": 0.85, "m1": 0.15},
+                    fallback_order=["e2", "m1", "m2", "e1"],
+                )
+            return self._choose_available_operator("e2", fallbacks=["m1", "m2", "e1"])
+
+        if diagnosis_label == "NEED_GLOBAL_NOVELTY":
+            allow_e1 = self._can_try_e1_in_gn(
+                no_improve_gens=no_improve_gens,
+                recent_ops=recent_ops,
+                current_best=current_best,
+                best_at_last_e2=best_at_last_e2,
+            )
+            if not allow_e1:
+                return self._choose_available_operator("e2", fallbacks=["m1", "m2", "e1"])
+            if self.route_use_probabilistic:
+                return self._sample_operator(
+                    {"e2": 0.7, "e1": 0.2, "m1": 0.1},
+                    fallback_order=["e2", "e1", "m1", "m2"],
+                )
+            return self._choose_available_operator("e1", fallbacks=["e2", "m1", "m2"])
+
+        return self._choose_available_operator("e2", fallbacks=["m1", "m2", "e1"])
 
     def _evaluate_best_on_holdout(self, interface_prob, population, generation_index):
         if len(population) == 0:
@@ -350,6 +430,8 @@ class EOH:
         last_overfit_risk = False
         last_holdout_fitness = None
         last_train_at_holdout = None
+        best_at_last_e2 = prev_best
+        e1_cooldown_remaining = 0
 
         for pop in range(n_start, self.n_pop):
             generation_offspring = []
@@ -367,7 +449,15 @@ class EOH:
                     diversity=last_diversity,
                     code_length_growth=last_code_length_growth,
                 )
-                chosen_operator = self._route_operator(diagnosis_label)
+                chosen_operator = self._route_operator(
+                    diagnosis_label=diagnosis_label,
+                    generation_index=pop,
+                    no_improve_gens=no_improve_gens,
+                    recent_ops=recent_ops,
+                    current_best=prev_best,
+                    best_at_last_e2=best_at_last_e2,
+                    e1_cooldown_remaining=e1_cooldown_remaining,
+                )
                 print(f" OP: {chosen_operator}, [routed] ", end="|")
                 best_before = self._best_objective(population)
                 _, offsprings = interface_ec.get_algorithm(population, chosen_operator)
@@ -407,6 +497,12 @@ class EOH:
                 if len(recent_ops) > self.route_recent_window:
                     recent_ops = recent_ops[-self.route_recent_window:]
                     recent_deltas = recent_deltas[-self.route_recent_window:]
+                if chosen_operator == "e2" and best_after is not None:
+                    best_at_last_e2 = float(best_after)
+                if chosen_operator == "e1":
+                    e1_cooldown_remaining = self.route_e1_cooldown
+                elif e1_cooldown_remaining > 0:
+                    e1_cooldown_remaining -= 1
                 print()
             else:
                 diagnosis_label = "BASELINE_SCHEDULE"
@@ -451,6 +547,8 @@ class EOH:
                     }
                     self._write_operator_log(op_record)
                     print()
+                if e1_cooldown_remaining > 0:
+                    e1_cooldown_remaining -= 1
 
             self._save_population(population, pop + 1)
 
@@ -474,9 +572,9 @@ class EOH:
                 last_improved = False
                 no_improve_gens += 1
             else:
-                improvement = prev_best - best_fitness
-                train_delta = float(improvement)
-                if improvement > self.route_improvement_epsilon:
+                train_delta = float(prev_best - best_fitness)
+                improved = bool(best_fitness < (prev_best - self.route_improvement_epsilon))
+                if improved:
                     last_improved = True
                     no_improve_gens = 0
                     prev_best = best_fitness
@@ -493,8 +591,12 @@ class EOH:
                     and last_train_at_holdout is not None
                     and train_fitness is not None
                 ):
-                    train_improved = (last_train_at_holdout - train_fitness) > self.route_improvement_epsilon
-                    holdout_worsened = (holdout_fitness - last_holdout_fitness) > self.route_improvement_epsilon
+                    train_improved = bool(
+                        train_fitness < (last_train_at_holdout - self.route_improvement_epsilon)
+                    )
+                    holdout_worsened = bool(
+                        holdout_fitness > (last_holdout_fitness + self.route_improvement_epsilon)
+                    )
                     last_overfit_risk = bool(train_improved and holdout_worsened)
                 else:
                     last_overfit_risk = False
@@ -523,6 +625,8 @@ class EOH:
                 "chosen_operator": chosen_operator,
                 "diagnosis_label": diagnosis_label,
                 "invalid_rate": invalid_rate,
+                "no_improve_gens": int(no_improve_gens),
+                "e1_cooldown_remaining": int(e1_cooldown_remaining),
                 "stagnation_count": int(no_improve_gens),
                 "diversity": diversity,
                 "code_length_growth": self._to_float_or_none(last_code_length_growth),

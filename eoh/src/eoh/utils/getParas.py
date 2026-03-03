@@ -52,12 +52,16 @@ class Paras():
         ###  Run mode / logging ###
         #####################
         self.eoh_mode = "baseline"  # baseline | routed
-        self.route_improvement_epsilon = 1e-4
+        self.route_improvement_epsilon = 1e-12
         self.route_stagnation_k = 3
         self.route_invalid_rate_threshold = 0.5
         self.route_use_diversity = True
         self.route_recent_window = 3
         self.route_structural_plateau_eps = 1e-5
+        self.route_warmup_gens = 2
+        self.route_e1_cooldown = 3
+        self.route_e2_recent_k = 3
+        self.route_use_probabilistic = True
         self.log_full_population = False
 
 
