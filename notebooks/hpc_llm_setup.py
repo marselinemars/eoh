@@ -107,6 +107,12 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                 req = json.loads(self.rfile.read(length).decode("utf-8"))
                 prompt = req.get("prompt", "")
                 params = req.get("params", {}) or {}
+                temperature = params.get("temperature", 0.2)
+                if temperature is None:
+                    temperature = 0.2
+                max_new_tokens = params.get("max_new_tokens", bridge_max_tokens)
+                if max_new_tokens is None:
+                    max_new_tokens = bridge_max_tokens
 
                 headers = {
                     "Content-Type": "application/json",
@@ -117,8 +123,8 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                 chat_payload = {
                     "model": model_id,
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": params.get("temperature", 0.2),
-                    "max_tokens": params.get("max_new_tokens", bridge_max_tokens),
+                    "temperature": temperature,
+                    "max_tokens": max_new_tokens,
                 }
                 r = requests.post(
                     f"{base_url}/chat/completions",
@@ -137,8 +143,8 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                 comp_payload = {
                     "model": model_id,
                     "prompt": prompt,
-                    "temperature": params.get("temperature", 0.2),
-                    "max_tokens": params.get("max_new_tokens", bridge_max_tokens),
+                    "temperature": temperature,
+                    "max_tokens": max_new_tokens,
                 }
                 r2 = requests.post(
                     f"{base_url}/completions",

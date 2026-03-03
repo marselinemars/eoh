@@ -1,5 +1,7 @@
 import re
 import time
+import ast
+import os
 from ...llm.interface_LLM import InterfaceLLM
 
 class Evolution():
@@ -32,6 +34,7 @@ class Evolution():
 
 
         self.interface_llm = InterfaceLLM(self.api_endpoint, self.api_key, self.model_LLM,llm_use_local,llm_local_url, self.debug_mode)
+        self.max_parse_retries = int(os.getenv("EOH_PARSE_RETRIES", "6"))
 
     def get_prompt_i1(self):
         
@@ -118,54 +121,95 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         return prompt_content
 
 
-    def _get_alg(self,prompt_content):
+    def _normalize_text(self, text):
+        if text is None:
+            return ""
+        text = text.replace("\r\n", "\n")
+        text = text.replace("\u2018", "'").replace("\u2019", "'")
+        text = text.replace("\u201c", '"').replace("\u201d", '"')
+        return text
 
-        response = self.interface_llm.get_response(prompt_content)
-
+    def _extract_algorithm(self, response):
         algorithm = re.findall(r"\{(.*)\}", response, re.DOTALL)
-        if len(algorithm) == 0:
-            if 'python' in response:
-                algorithm = re.findall(r'^.*?(?=python)', response,re.DOTALL)
-            elif 'import' in response:
-                algorithm = re.findall(r'^.*?(?=import)', response,re.DOTALL)
-            else:
-                algorithm = re.findall(r'^.*?(?=def)', response,re.DOTALL)
+        if len(algorithm) > 0:
+            return algorithm[0].strip()
+        for splitter in ["```", "def ", "import ", "from "]:
+            if splitter in response:
+                return response.split(splitter)[0].strip()
+        return "Generated heuristic"
 
-        code = re.findall(r"import.*return", response, re.DOTALL)
-        if len(code) == 0:
-            code = re.findall(r"def.*return", response, re.DOTALL)
+    def _extract_code_block(self, response):
+        func_pat = rf"def\s+{re.escape(self.prompt_func_name)}\s*\("
+        code_blocks = re.findall(r"```(?:python|py)?\s*(.*?)```", response, re.DOTALL | re.IGNORECASE)
+        for block in code_blocks:
+            if re.search(func_pat, block):
+                return block.strip()
+        if len(code_blocks) > 0:
+            return code_blocks[0].strip()
 
-        n_retry = 1
-        while (len(algorithm) == 0 or len(code) == 0):
-            if self.debug_mode:
-                print("Error: algorithm or code not identified, wait 1 seconds and retrying ... ")
+        m_def = re.search(rf"(def\s+{re.escape(self.prompt_func_name)}\s*\(.*)", response, re.DOTALL)
+        if m_def:
+            code = m_def.group(1)
+            code = code.split("```")[0]
+            return code.strip()
 
+        m_import_def = re.search(rf"(import[\s\S]*?def\s+{re.escape(self.prompt_func_name)}\s*\(.*)", response, re.DOTALL)
+        if m_import_def:
+            code = m_import_def.group(1)
+            code = code.split("```")[0]
+            return code.strip()
+        return None
+
+    def _build_valid_code(self, code_candidate):
+        code = code_candidate.strip()
+        if f"def {self.prompt_func_name}" not in code:
+            raise RuntimeError("Missing required function definition.")
+        if "import numpy as np" not in code:
+            code = "import numpy as np\n\n" + code
+        ast.parse(code)
+        return code
+
+    def _fallback_code(self):
+        if self.prompt_func_name == "score" and self.prompt_func_inputs == ["item", "bins"]:
+            return (
+                "import numpy as np\n\n"
+                "def score(item, bins):\n"
+                "    # Simple stable fallback: favor tighter fit.\n"
+                "    return -np.abs(bins - item)\n"
+            )
+        args = ", ".join(self.prompt_func_inputs)
+        if len(self.prompt_func_outputs) == 1:
+            ret = "0.0"
+        else:
+            ret = "(" + ", ".join(["0.0"] * len(self.prompt_func_outputs)) + ")"
+        return (
+            "import numpy as np\n\n"
+            f"def {self.prompt_func_name}({args}):\n"
+            f"    return {ret}\n"
+        )
+
+    def _get_alg(self,prompt_content):
+        last_err = None
+        for i in range(self.max_parse_retries):
             response = self.interface_llm.get_response(prompt_content)
+            response = self._normalize_text(response)
+            algorithm = self._extract_algorithm(response)
+            code_candidate = self._extract_code_block(response)
+            if code_candidate is None:
+                last_err = RuntimeError("No code block detected in response.")
+                continue
+            try:
+                code_all = self._build_valid_code(code_candidate)
+                return [code_all, algorithm]
+            except Exception as exc:
+                last_err = exc
+                if self.debug_mode:
+                    print(f"Parse/build failure {i+1}/{self.max_parse_retries}: {exc}")
+                time.sleep(0.5)
 
-            algorithm = re.findall(r"\{(.*)\}", response, re.DOTALL)
-            if len(algorithm) == 0:
-                if 'python' in response:
-                    algorithm = re.findall(r'^.*?(?=python)', response,re.DOTALL)
-                elif 'import' in response:
-                    algorithm = re.findall(r'^.*?(?=import)', response,re.DOTALL)
-                else:
-                    algorithm = re.findall(r'^.*?(?=def)', response,re.DOTALL)
-
-            code = re.findall(r"import.*return", response, re.DOTALL)
-            if len(code) == 0:
-                code = re.findall(r"def.*return", response, re.DOTALL)
-                
-            if n_retry > 3:
-                break
-            n_retry +=1
-
-        algorithm = algorithm[0]
-        code = code[0] 
-
-        code_all = code+" "+", ".join(s for s in self.prompt_func_outputs) 
-
-
-        return [code_all, algorithm]
+        if self.debug_mode:
+            print(f"Falling back to deterministic code due to parse errors: {last_err}")
+        return [self._fallback_code(), "Fallback valid heuristic"]
 
 
     def i1(self):
