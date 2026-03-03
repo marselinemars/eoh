@@ -35,7 +35,22 @@ def _make_logger(status_log_path: Path):
     return log
 
 
-def _tail_run_log(run_log_path: Path, stop_event: threading.Event, log, mode: str):
+def _parse_compare_seeds():
+    raw = os.getenv("EOH_COMPARE_SEEDS", "").strip()
+    if not raw:
+        return [int(os.getenv("EOH_SEED", "2024"))], False
+    seeds = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        seeds.append(int(token))
+    if not seeds:
+        seeds = [int(os.getenv("EOH_SEED", "2024"))]
+    return seeds, True
+
+
+def _tail_run_log(run_log_path: Path, stop_event: threading.Event, log, mode: str, run_tag: str):
     offset = 0
     while not stop_event.is_set():
         if run_log_path.exists():
@@ -49,8 +64,9 @@ def _tail_run_log(run_log_path: Path, stop_event: threading.Event, log, mode: st
                     try:
                         rec = json.loads(line)
                         log(
-                            f"{mode} progress: gen={rec.get('gen')} best={rec.get('best_fitness')} "
+                            f"{run_tag} {mode} progress: gen={rec.get('gen')} best={rec.get('best_fitness')} "
                             f"op={rec.get('chosen_operator')} label={rec.get('diagnosis_label')}",
+                            run_tag=run_tag,
                             mode=mode,
                             event="generation_progress",
                             gen=rec.get("gen"),
@@ -59,11 +75,16 @@ def _tail_run_log(run_log_path: Path, stop_event: threading.Event, log, mode: st
                             diagnosis_label=rec.get("diagnosis_label"),
                         )
                     except Exception:
-                        log(f"{mode} progress raw: {line.strip()}", mode=mode, event="generation_progress_raw")
+                        log(
+                            f"{run_tag} {mode} progress raw: {line.strip()}",
+                            run_tag=run_tag,
+                            mode=mode,
+                            event="generation_progress_raw",
+                        )
         time.sleep(2)
 
 
-def _tail_operator_log(operator_log_path: Path, stop_event: threading.Event, log, mode: str):
+def _tail_operator_log(operator_log_path: Path, stop_event: threading.Event, log, mode: str, run_tag: str):
     offset = 0
     while not stop_event.is_set():
         if operator_log_path.exists():
@@ -77,8 +98,9 @@ def _tail_operator_log(operator_log_path: Path, stop_event: threading.Event, log
                     try:
                         rec = json.loads(line)
                         log(
-                            f"{mode} operator: gen={rec.get('gen')} op={rec.get('operator')} "
+                            f"{run_tag} {mode} operator: gen={rec.get('gen')} op={rec.get('operator')} "
                             f"invalid_rate={rec.get('invalid_rate')} delta={rec.get('delta_best')}",
+                            run_tag=run_tag,
                             mode=mode,
                             event="operator_progress",
                             gen=rec.get("gen"),
@@ -91,7 +113,12 @@ def _tail_operator_log(operator_log_path: Path, stop_event: threading.Event, log
                             n_invalid=rec.get("n_invalid"),
                         )
                     except Exception:
-                        log(f"{mode} operator raw: {line.strip()}", mode=mode, event="operator_progress_raw")
+                        log(
+                            f"{run_tag} {mode} operator raw: {line.strip()}",
+                            run_tag=run_tag,
+                            mode=mode,
+                            event="operator_progress_raw",
+                        )
         time.sleep(2)
 
 
@@ -103,6 +130,7 @@ def _heartbeat(
     stop_event: threading.Event,
     log,
     mode: str,
+    run_tag: str,
 ):
     started = time.time()
     while not stop_event.is_set():
@@ -116,8 +144,9 @@ def _heartbeat(
             with operator_log_path.open("r", encoding="utf-8") as f:
                 operator_log_lines = sum(1 for _ in f)
         log(
-            f"{mode} heartbeat: elapsed={elapsed}s pop0_exists={pop0_path.exists()} "
+            f"{run_tag} {mode} heartbeat: elapsed={elapsed}s pop0_exists={pop0_path.exists()} "
             f"run_log_lines={run_log_lines} operator_log_lines={operator_log_lines}",
+            run_tag=run_tag,
             mode=mode,
             event="heartbeat",
             elapsed_s=elapsed,
@@ -128,7 +157,7 @@ def _heartbeat(
         time.sleep(20)
 
 
-def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settings: dict, log):
+def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settings: dict, log, run_tag: str):
     from eoh import eoh
     from eoh.utils.getParas import Paras
 
@@ -161,7 +190,8 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
         os.environ["EOH_LOG_PARSE_EVENTS"] = "0"
 
     log(
-        f"starting mode={mode}",
+        f"{run_tag} starting mode={mode}",
+        run_tag=run_tag,
         mode=mode,
         output_path=str(mode_root),
         run_log_path=str(run_log_path),
@@ -172,15 +202,19 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
     )
 
     stop_event = threading.Event()
-    monitor = threading.Thread(target=_tail_run_log, args=(run_log_path, stop_event, log, mode), daemon=True)
+    monitor = threading.Thread(
+        target=_tail_run_log,
+        args=(run_log_path, stop_event, log, mode, run_tag),
+        daemon=True,
+    )
     op_monitor = threading.Thread(
         target=_tail_operator_log,
-        args=(operator_log_path, stop_event, log, mode),
+        args=(operator_log_path, stop_event, log, mode, run_tag),
         daemon=True,
     )
     heart = threading.Thread(
         target=_heartbeat,
-        args=(mode_root, run_log_path, operator_log_path, pop0_path, stop_event, log, mode),
+        args=(mode_root, run_log_path, operator_log_path, pop0_path, stop_event, log, mode, run_tag),
         daemon=True,
     )
     monitor.start()
@@ -211,7 +245,7 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
             paras.eva_numba_decorator = False
         runner = eoh.EVOL(paras)
         runner.run()
-        log(f"finished mode={mode}", mode=mode, event="mode_finished")
+        log(f"{run_tag} finished mode={mode}", run_tag=run_tag, mode=mode, event="mode_finished")
     finally:
         stop_event.set()
         monitor.join(timeout=3)
@@ -221,20 +255,18 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
 
 def main():
     project_root, eoh_src = ensure_eoh_src_on_path()
+    compare_seeds, from_compare_env = _parse_compare_seeds()
     settings = {
         "problem": os.getenv("EOH_PROBLEM", "bp_online"),
         "pop_size": int(os.getenv("EOH_POP_SIZE", "8")),
         "generations": int(os.getenv("EOH_N_GENERATIONS", "10")),
         "n_proc": int(os.getenv("EOH_N_PROC", "1")),
         "eval_instances_per_gen": int(os.getenv("EOH_EVAL_INSTANCES_PER_GEN", "256")),
-        "seed": int(os.getenv("EOH_SEED", "2024")),
         "disable_numba": os.getenv("EOH_DISABLE_NUMBA", "1") == "1",
         "log_llm_io": os.getenv("EOH_LOG_LLM_IO", "1") == "1",
     }
 
     out_root = Path(os.getenv("EOH_COMPARE_OUT", "./compare_runs")).resolve()
-    baseline_out = str(out_root / "baseline")
-    routed_out = str(out_root / "routed")
     out_root.mkdir(parents=True, exist_ok=True)
     status_log_path = out_root / "runner_status.jsonl"
     if status_log_path.exists():
@@ -250,8 +282,13 @@ def main():
         requested_model=cfg.model,
         api_key_present=bool(cfg.api_key),
     )
-    log("experiment settings", **settings)
-    log("output paths prepared", out_root=str(out_root), baseline_out=baseline_out, routed_out=routed_out)
+    log(
+        "experiment settings",
+        **settings,
+        compare_seeds=compare_seeds,
+        seeds_source="EOH_COMPARE_SEEDS" if from_compare_env else "EOH_SEED",
+    )
+    log("output root prepared", out_root=str(out_root))
 
     server = None
     try:
@@ -261,13 +298,47 @@ def main():
         status, payload = test_bridge(bridge_url)
         log("bridge probe complete", bridge_test_status=status, bridge_test_payload=payload)
 
-        run_once("baseline", baseline_out, bridge_url, model_id, settings, log)
-        log("baseline run log path", path=str(Path(baseline_out) / "results" / "run_log.jsonl"))
-        log("baseline operator log path", path=str(Path(baseline_out) / "results" / "operator_events.jsonl"))
+        use_seed_subdirs = len(compare_seeds) > 1
+        for seed in compare_seeds:
+            run_tag = f"seed={seed}"
+            seed_settings = dict(settings)
+            seed_settings["seed"] = int(seed)
+            seed_root = out_root / f"seed_{seed}" if use_seed_subdirs else out_root
+            baseline_out = str(seed_root / "baseline")
+            routed_out = str(seed_root / "routed")
+            log(
+                f"{run_tag} output paths prepared",
+                run_tag=run_tag,
+                seed=seed,
+                seed_root=str(seed_root),
+                baseline_out=baseline_out,
+                routed_out=routed_out,
+            )
 
-        run_once("routed", routed_out, bridge_url, model_id, settings, log)
-        log("routed run log path", path=str(Path(routed_out) / "results" / "run_log.jsonl"))
-        log("routed operator log path", path=str(Path(routed_out) / "results" / "operator_events.jsonl"))
+            run_once("baseline", baseline_out, bridge_url, model_id, seed_settings, log, run_tag)
+            log(
+                f"{run_tag} baseline run log path",
+                run_tag=run_tag,
+                path=str(Path(baseline_out) / "results" / "run_log.jsonl"),
+            )
+            log(
+                f"{run_tag} baseline operator log path",
+                run_tag=run_tag,
+                path=str(Path(baseline_out) / "results" / "operator_events.jsonl"),
+            )
+
+            run_once("routed", routed_out, bridge_url, model_id, seed_settings, log, run_tag)
+            log(
+                f"{run_tag} routed run log path",
+                run_tag=run_tag,
+                path=str(Path(routed_out) / "results" / "run_log.jsonl"),
+            )
+            log(
+                f"{run_tag} routed operator log path",
+                run_tag=run_tag,
+                path=str(Path(routed_out) / "results" / "operator_events.jsonl"),
+            )
+
         log("compare run completed successfully")
     except Exception as exc:
         log("compare run failed", error=str(exc), traceback=traceback.format_exc())
