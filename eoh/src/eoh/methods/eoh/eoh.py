@@ -70,6 +70,7 @@ class EOH:
         self.route_use_diversity = bool(getattr(paras, "route_use_diversity", True))
         self.log_full_population = bool(getattr(paras, "log_full_population", False))
         self.run_log_path = os.path.join(self.output_path, "results", "run_log.jsonl")
+        self.operator_log_path = os.path.join(self.output_path, "results", "operator_events.jsonl")
 
         print("- EoH parameters loaded -")
 
@@ -89,9 +90,15 @@ class EOH:
         os.makedirs(os.path.dirname(self.run_log_path), exist_ok=True)
         with open(self.run_log_path, "w", encoding="utf-8") as _:
             pass
+        with open(self.operator_log_path, "w", encoding="utf-8") as _:
+            pass
 
     def _write_run_log(self, record):
         with open(self.run_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_operator_log(self, record):
+        with open(self.operator_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
     def _code_hash(self, code):
@@ -136,6 +143,28 @@ class EOH:
             if offspring.get("objective") is None or offspring.get("code") is None:
                 invalid_count += 1
         return invalid_count / len(offspring_list)
+
+    def _count_valid(self, offspring_list):
+        valid_count = 0
+        for offspring in offspring_list:
+            if offspring is None:
+                continue
+            if offspring.get("objective") is not None and offspring.get("code") is not None:
+                valid_count += 1
+        return valid_count
+
+    def _best_objective(self, population):
+        if len(population) == 0:
+            return None
+        return population[0]["objective"]
+
+    def _to_float_or_none(self, value):
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _population_diversity(self, population):
         if not self.route_use_diversity:
@@ -246,6 +275,7 @@ class EOH:
                 diagnosis_label = self._diagnose(last_improved, stagnation_count, last_invalid_rate)
                 chosen_operator = self._route_operator(diagnosis_label)
                 print(f" OP: {chosen_operator}, [routed] ", end="|")
+                best_before = self._best_objective(population)
                 _, offsprings = interface_ec.get_algorithm(population, chosen_operator)
                 self.add2pop(population, offsprings)
                 generation_offspring.extend(offsprings)
@@ -253,6 +283,30 @@ class EOH:
                     print(" Obj: ", off["objective"], end="|")
                 size_act = min(len(population), self.pop_size)
                 population = self.manage.population_management(population, size_act)
+                best_after = self._best_objective(population)
+                n_offspring = len(offsprings)
+                n_valid = self._count_valid(offsprings)
+                n_invalid = n_offspring - n_valid
+                invalid_rate_op = (n_invalid / n_offspring) if n_offspring > 0 else 1.0
+                delta_best = None
+                if best_before is not None and best_after is not None:
+                    delta_best = float(best_before - best_after)
+                op_record = {
+                    "gen": int(pop + 1),
+                    "mode": self.mode,
+                    "operator": chosen_operator,
+                    "operator_weight": None,
+                    "executed": True,
+                    "diagnosis_label": diagnosis_label,
+                    "n_offspring": int(n_offspring),
+                    "n_valid": int(n_valid),
+                    "n_invalid": int(n_invalid),
+                    "invalid_rate": float(invalid_rate_op),
+                    "best_before": self._to_float_or_none(best_before),
+                    "best_after": self._to_float_or_none(best_after),
+                    "delta_best": self._to_float_or_none(delta_best),
+                }
+                self._write_operator_log(op_record)
                 print()
             else:
                 chosen_operator = "schedule:" + ",".join(self.operators)
@@ -261,7 +315,9 @@ class EOH:
                     print(f" OP: {op}, [{i + 1} / {n_op}] ", end="|")
                     op_w = self.operator_weights[i]
                     offsprings = []
-                    if np.random.rand() < op_w:
+                    best_before = self._best_objective(population)
+                    executed = np.random.rand() < op_w
+                    if executed:
                         _, offsprings = interface_ec.get_algorithm(population, op)
                     self.add2pop(population, offsprings)
                     generation_offspring.extend(offsprings)
@@ -269,6 +325,30 @@ class EOH:
                         print(" Obj: ", off["objective"], end="|")
                     size_act = min(len(population), self.pop_size)
                     population = self.manage.population_management(population, size_act)
+                    best_after = self._best_objective(population)
+                    n_offspring = len(offsprings)
+                    n_valid = self._count_valid(offsprings)
+                    n_invalid = n_offspring - n_valid
+                    invalid_rate_op = (n_invalid / n_offspring) if n_offspring > 0 else 1.0
+                    delta_best = None
+                    if best_before is not None and best_after is not None:
+                        delta_best = float(best_before - best_after)
+                    op_record = {
+                        "gen": int(pop + 1),
+                        "mode": self.mode,
+                        "operator": op,
+                        "operator_weight": float(op_w),
+                        "executed": bool(executed),
+                        "diagnosis_label": "DEFAULT",
+                        "n_offspring": int(n_offspring),
+                        "n_valid": int(n_valid),
+                        "n_invalid": int(n_invalid),
+                        "invalid_rate": float(invalid_rate_op),
+                        "best_before": self._to_float_or_none(best_before),
+                        "best_after": self._to_float_or_none(best_after),
+                        "delta_best": self._to_float_or_none(delta_best),
+                    }
+                    self._write_operator_log(op_record)
                     print()
 
             self._save_population(population, pop + 1)

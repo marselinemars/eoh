@@ -63,21 +63,67 @@ def _tail_run_log(run_log_path: Path, stop_event: threading.Event, log, mode: st
         time.sleep(2)
 
 
-def _heartbeat(mode_root: Path, run_log_path: Path, pop0_path: Path, stop_event: threading.Event, log, mode: str):
+def _tail_operator_log(operator_log_path: Path, stop_event: threading.Event, log, mode: str):
+    offset = 0
+    while not stop_event.is_set():
+        if operator_log_path.exists():
+            with operator_log_path.open("r", encoding="utf-8") as f:
+                f.seek(offset)
+                while True:
+                    line = f.readline()
+                    if not line:
+                        break
+                    offset = f.tell()
+                    try:
+                        rec = json.loads(line)
+                        log(
+                            f"{mode} operator: gen={rec.get('gen')} op={rec.get('operator')} "
+                            f"invalid_rate={rec.get('invalid_rate')} delta={rec.get('delta_best')}",
+                            mode=mode,
+                            event="operator_progress",
+                            gen=rec.get("gen"),
+                            operator=rec.get("operator"),
+                            invalid_rate=rec.get("invalid_rate"),
+                            delta_best=rec.get("delta_best"),
+                            diagnosis_label=rec.get("diagnosis_label"),
+                            n_offspring=rec.get("n_offspring"),
+                            n_valid=rec.get("n_valid"),
+                            n_invalid=rec.get("n_invalid"),
+                        )
+                    except Exception:
+                        log(f"{mode} operator raw: {line.strip()}", mode=mode, event="operator_progress_raw")
+        time.sleep(2)
+
+
+def _heartbeat(
+    mode_root: Path,
+    run_log_path: Path,
+    operator_log_path: Path,
+    pop0_path: Path,
+    stop_event: threading.Event,
+    log,
+    mode: str,
+):
     started = time.time()
     while not stop_event.is_set():
         elapsed = int(time.time() - started)
         run_log_lines = 0
+        operator_log_lines = 0
         if run_log_path.exists():
             with run_log_path.open("r", encoding="utf-8") as f:
                 run_log_lines = sum(1 for _ in f)
+        if operator_log_path.exists():
+            with operator_log_path.open("r", encoding="utf-8") as f:
+                operator_log_lines = sum(1 for _ in f)
         log(
-            f"{mode} heartbeat: elapsed={elapsed}s pop0_exists={pop0_path.exists()} run_log_lines={run_log_lines}",
+            f"{mode} heartbeat: elapsed={elapsed}s pop0_exists={pop0_path.exists()} "
+            f"run_log_lines={run_log_lines} operator_log_lines={operator_log_lines}",
             mode=mode,
             event="heartbeat",
             elapsed_s=elapsed,
             pop0_exists=pop0_path.exists(),
             run_log_lines=run_log_lines,
+            operator_log_lines=operator_log_lines,
         )
         time.sleep(20)
 
@@ -89,6 +135,7 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
     mode_root = Path(output_path).resolve()
     mode_root.mkdir(parents=True, exist_ok=True)
     run_log_path = mode_root / "results" / "run_log.jsonl"
+    operator_log_path = mode_root / "results" / "operator_events.jsonl"
     pop0_path = mode_root / "results" / "pops" / "population_generation_0.json"
     llm_io_dir = mode_root / "results" / "llm_io"
     llm_io_path = llm_io_dir / "llm_interactions.jsonl"
@@ -96,6 +143,8 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
     # Remove stale files so progress is unambiguous.
     if run_log_path.exists():
         run_log_path.unlink()
+    if operator_log_path.exists():
+        operator_log_path.unlink()
     if pop0_path.exists():
         pop0_path.unlink()
     if llm_io_path.exists():
@@ -116,6 +165,7 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
         mode=mode,
         output_path=str(mode_root),
         run_log_path=str(run_log_path),
+        operator_log_path=str(operator_log_path),
         population0_path=str(pop0_path),
         llm_io_path=str(llm_io_path),
         parse_events_path=str(parse_events_path),
@@ -123,8 +173,18 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
 
     stop_event = threading.Event()
     monitor = threading.Thread(target=_tail_run_log, args=(run_log_path, stop_event, log, mode), daemon=True)
-    heart = threading.Thread(target=_heartbeat, args=(mode_root, run_log_path, pop0_path, stop_event, log, mode), daemon=True)
+    op_monitor = threading.Thread(
+        target=_tail_operator_log,
+        args=(operator_log_path, stop_event, log, mode),
+        daemon=True,
+    )
+    heart = threading.Thread(
+        target=_heartbeat,
+        args=(mode_root, run_log_path, operator_log_path, pop0_path, stop_event, log, mode),
+        daemon=True,
+    )
     monitor.start()
+    op_monitor.start()
     heart.start()
 
     random.seed(settings["seed"])
@@ -155,6 +215,7 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
     finally:
         stop_event.set()
         monitor.join(timeout=3)
+        op_monitor.join(timeout=3)
         heart.join(timeout=3)
 
 
@@ -202,9 +263,11 @@ def main():
 
         run_once("baseline", baseline_out, bridge_url, model_id, settings, log)
         log("baseline run log path", path=str(Path(baseline_out) / "results" / "run_log.jsonl"))
+        log("baseline operator log path", path=str(Path(baseline_out) / "results" / "operator_events.jsonl"))
 
         run_once("routed", routed_out, bridge_url, model_id, settings, log)
         log("routed run log path", path=str(Path(routed_out) / "results" / "run_log.jsonl"))
+        log("routed operator log path", path=str(Path(routed_out) / "results" / "operator_events.jsonl"))
         log("compare run completed successfully")
     except Exception as exc:
         log("compare run failed", error=str(exc), traceback=traceback.format_exc())
