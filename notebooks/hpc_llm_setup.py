@@ -12,6 +12,10 @@ import requests
 DEFAULT_HPC_BASE = "http://vllm-nodeport.vllm-ns.svc.cluster.local:8000/v1"
 DEFAULT_HPC_KEY = "my-key-ensia-2022-1030"
 DEFAULT_HPC_MODEL = "QuantTrio/Qwen3-VL-235B-A22B-Instruct-AWQ"
+DEFAULT_BRIDGE_SYSTEM_MESSAGE = (
+    "Return ONLY: (1) one short algorithm sentence in {...} and (2) valid Python code. "
+    "No reasoning, no thinking process, no markdown fences, no extra commentary."
+)
 
 
 @dataclass
@@ -84,6 +88,8 @@ def resolve_model_id(cfg: HPCBridgeConfig, timeout_s: int = 60) -> str:
 
 def _make_handler(base_url: str, api_key: str, model_id: str):
     bridge_max_tokens = int(os.getenv("EOH_BRIDGE_MAX_TOKENS", "1200"))
+    bridge_system_message = os.getenv("EOH_BRIDGE_SYSTEM_MESSAGE", DEFAULT_BRIDGE_SYSTEM_MESSAGE)
+    disable_thinking = os.getenv("EOH_BRIDGE_DISABLE_THINKING", "1") == "1"
 
     class BridgeHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -120,12 +126,25 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
 
+                messages = [{"role": "user", "content": prompt}]
+                if bridge_system_message:
+                    messages = [
+                        {"role": "system", "content": bridge_system_message},
+                        {"role": "user", "content": prompt},
+                    ]
+
                 chat_payload = {
                     "model": model_id,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": messages,
                     "temperature": temperature,
                     "max_tokens": max_new_tokens,
                 }
+                if disable_thinking:
+                    # Some Qwen/vLLM deployments accept one of these flags.
+                    # Unknown keys are typically ignored by compliant servers.
+                    chat_payload["thinking"] = False
+                    chat_payload["chat_template_kwargs"] = {"enable_thinking": False}
+                    chat_payload["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
                 r = requests.post(
                     f"{base_url}/chat/completions",
                     headers=headers,
@@ -140,12 +159,21 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                         return
 
                 # fallback to completion-style endpoint if chat path is unavailable
+                completion_prompt = prompt
+                if bridge_system_message:
+                    completion_prompt = (
+                        f"System: {bridge_system_message}\n\n"
+                        f"User: {prompt}\n\n"
+                        "Assistant:"
+                    )
                 comp_payload = {
                     "model": model_id,
-                    "prompt": prompt,
+                    "prompt": completion_prompt,
                     "temperature": temperature,
                     "max_tokens": max_new_tokens,
                 }
+                if disable_thinking:
+                    comp_payload["thinking"] = False
                 r2 = requests.post(
                     f"{base_url}/completions",
                     headers=headers,
