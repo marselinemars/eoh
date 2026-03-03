@@ -64,13 +64,16 @@ def _tail_run_log(run_log_path: Path, stop_event: threading.Event, log, mode: st
                     try:
                         rec = json.loads(line)
                         log(
-                            f"{run_tag} {mode} progress: gen={rec.get('gen')} best={rec.get('best_fitness')} "
+                            f"{run_tag} {mode} progress: gen={rec.get('gen')} train={rec.get('train_fitness', rec.get('best_fitness'))} "
+                            f"holdout={rec.get('holdout_fitness')} gap={rec.get('fitness_gap')} "
                             f"op={rec.get('chosen_operator')} label={rec.get('diagnosis_label')}",
                             run_tag=run_tag,
                             mode=mode,
                             event="generation_progress",
                             gen=rec.get("gen"),
-                            best_fitness=rec.get("best_fitness"),
+                            train_fitness=rec.get("train_fitness", rec.get("best_fitness")),
+                            holdout_fitness=rec.get("holdout_fitness"),
+                            fitness_gap=rec.get("fitness_gap"),
                             chosen_operator=rec.get("chosen_operator"),
                             diagnosis_label=rec.get("diagnosis_label"),
                         )
@@ -238,6 +241,8 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
             exp_output_path=output_path,
             exp_debug_mode=False,
             eval_instances_per_gen=settings["eval_instances_per_gen"],
+            holdout_instances=settings["holdout_instances"],
+            holdout_eval_interval=settings["holdout_eval_interval"],
             eoh_mode=mode,
             log_full_population=False,
         )
@@ -262,6 +267,8 @@ def main():
         "generations": int(os.getenv("EOH_N_GENERATIONS", "10")),
         "n_proc": int(os.getenv("EOH_N_PROC", "1")),
         "eval_instances_per_gen": int(os.getenv("EOH_EVAL_INSTANCES_PER_GEN", "256")),
+        "holdout_instances": int(os.getenv("EOH_HOLDOUT_INSTANCES", "64")),
+        "holdout_eval_interval": int(os.getenv("EOH_HOLDOUT_EVAL_INTERVAL", "1")),
         "disable_numba": os.getenv("EOH_DISABLE_NUMBA", "1") == "1",
         "log_llm_io": os.getenv("EOH_LOG_LLM_IO", "1") == "1",
     }

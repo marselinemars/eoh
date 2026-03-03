@@ -22,6 +22,12 @@ def read_jsonl(path: Path):
 
 def _abbr(label: str) -> str:
     mapping = {
+        "NEED_PARAM_TUNING": "PT",
+        "NEED_STRUCTURAL_EDIT": "SE",
+        "NEED_BACKBONE_VARIANT": "BV",
+        "NEED_GLOBAL_NOVELTY": "GN",
+        "OVERFIT_RISK": "OF",
+        "BASELINE_SCHEDULE": "BL",
         "IMPROVING": "I",
         "STAGNATING": "S",
         "TOO_MANY_INVALIDS": "T",
@@ -369,7 +375,14 @@ def plot_diagnosis_effect(operator_logs_by_mode, outdir: Path):
         print("skipping diagnosis effect plot: routed operator events missing")
         return
 
-    label_order = ["IMPROVING", "STAGNATING", "TOO_MANY_INVALIDS", "DEFAULT"]
+    label_order = [
+        "NEED_PARAM_TUNING",
+        "NEED_STRUCTURAL_EDIT",
+        "NEED_BACKBONE_VARIANT",
+        "NEED_GLOBAL_NOVELTY",
+        "OVERFIT_RISK",
+        "DEFAULT",
+    ]
     buckets = {k: {"delta_best": [], "invalid_rate": [], "n": 0} for k in label_order}
     for r in routed:
         label = r.get("diagnosis_label", "DEFAULT")

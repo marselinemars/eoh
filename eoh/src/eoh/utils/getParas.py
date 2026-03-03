@@ -45,6 +45,8 @@ class Paras():
         self.eva_timeout = 30
         self.eva_numba_decorator = False
         self.eval_instances_per_gen = None
+        self.holdout_instances = 64
+        self.holdout_eval_interval = 1
 
         #####################
         ###  Run mode / logging ###
@@ -54,6 +56,8 @@ class Paras():
         self.route_stagnation_k = 3
         self.route_invalid_rate_threshold = 0.5
         self.route_use_diversity = True
+        self.route_recent_window = 3
+        self.route_structural_plateau_eps = 1e-5
         self.log_full_population = False
 
 

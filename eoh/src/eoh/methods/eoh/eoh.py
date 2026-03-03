@@ -4,6 +4,7 @@ import random
 import time
 import os
 import hashlib
+import concurrent.futures
 
 from .eoh_interface_EC import InterfaceEC
 # main class for eoh
@@ -68,6 +69,9 @@ class EOH:
         self.route_stagnation_k = int(getattr(paras, "route_stagnation_k", 3))
         self.route_invalid_rate_threshold = float(getattr(paras, "route_invalid_rate_threshold", 0.5))
         self.route_use_diversity = bool(getattr(paras, "route_use_diversity", True))
+        self.route_recent_window = int(getattr(paras, "route_recent_window", 3))
+        self.route_structural_plateau_eps = float(getattr(paras, "route_structural_plateau_eps", 1e-5))
+        self.holdout_eval_interval = max(1, int(getattr(paras, "holdout_eval_interval", 1)))
         self.log_full_population = bool(getattr(paras, "log_full_population", False))
         self.run_log_path = os.path.join(self.output_path, "results", "run_log.jsonl")
         self.operator_log_path = os.path.join(self.output_path, "results", "operator_events.jsonl")
@@ -176,26 +180,99 @@ class EOH:
                 hashes.add(code_hash)
         return len(hashes)
 
-    def _diagnose(self, last_improved, stagnation_count, last_invalid_rate):
-        if last_invalid_rate > self.route_invalid_rate_threshold:
-            return "TOO_MANY_INVALIDS"
+    def _population_avg_code_length(self, population):
+        lengths = []
+        for individual in population:
+            code = individual.get("code")
+            if isinstance(code, str):
+                lengths.append(len(code))
+        if len(lengths) == 0:
+            return None
+        return float(np.mean(np.array(lengths)))
+
+    def _choose_available_operator(self, preferred, fallbacks=None):
+        if preferred in self.operators:
+            return preferred
+        if fallbacks is not None:
+            for op in fallbacks:
+                if op in self.operators:
+                    return op
+        return self.operators[0]
+
+    def _should_structural_edit(self, no_improve_gens, recent_ops, recent_deltas, diversity, code_length_growth):
+        if no_improve_gens < 2:
+            return False
+        if len(recent_ops) == 0:
+            return False
+
+        m2_deltas = [recent_deltas[i] for i, op in enumerate(recent_ops) if op == "m2"]
+        m2_recent_count = len(m2_deltas)
+        if m2_recent_count == 0:
+            return False
+        no_gain_on_m2 = all((d is None) or (d <= self.route_structural_plateau_eps) for d in m2_deltas)
+        low_diversity = (diversity is not None) and (diversity <= max(2, self.pop_size // 2))
+        code_is_growing = (code_length_growth is not None) and (code_length_growth > 0.0)
+        return (m2_recent_count >= 2) and no_gain_on_m2 and (low_diversity or code_is_growing)
+
+    def _diagnose_routed(
+        self,
+        last_improved,
+        no_improve_gens,
+        overfit_risk,
+        recent_ops,
+        recent_deltas,
+        diversity,
+        code_length_growth,
+    ):
+        if overfit_risk:
+            return "OVERFIT_RISK"
         if last_improved:
-            return "IMPROVING"
-        if stagnation_count >= self.route_stagnation_k:
-            return "STAGNATING"
-        return "DEFAULT"
+            return "NEED_PARAM_TUNING"
+        if self._should_structural_edit(
+            no_improve_gens=no_improve_gens,
+            recent_ops=recent_ops,
+            recent_deltas=recent_deltas,
+            diversity=diversity,
+            code_length_growth=code_length_growth,
+        ):
+            return "NEED_STRUCTURAL_EDIT"
+        if no_improve_gens >= 3:
+            return "NEED_GLOBAL_NOVELTY"
+        return "NEED_BACKBONE_VARIANT"
 
     def _route_operator(self, diagnosis_label):
         route_map = {
-            "IMPROVING": "e1",
-            "STAGNATING": "m2",
-            "TOO_MANY_INVALIDS": "m1",
-            "DEFAULT": "e2",
+            "NEED_PARAM_TUNING": "m2",
+            "NEED_STRUCTURAL_EDIT": "m1",
+            "NEED_BACKBONE_VARIANT": "e2",
+            "NEED_GLOBAL_NOVELTY": "e1",
+            "OVERFIT_RISK": "m3",
         }
-        op = route_map.get(diagnosis_label, self.operators[0])
-        if op not in self.operators:
-            op = self.operators[0]
-        return op
+        preferred = route_map.get(diagnosis_label, "e2")
+        if preferred == "m3":
+            return self._choose_available_operator("m3", fallbacks=["m1", "e1", "e2", "m2"])
+        return self._choose_available_operator(preferred, fallbacks=["e2", "m2", "m1", "e1"])
+
+    def _evaluate_best_on_holdout(self, interface_prob, population, generation_index):
+        if len(population) == 0:
+            return None, False
+        if ((generation_index + 1) % self.holdout_eval_interval) != 0:
+            return None, False
+        if not hasattr(interface_prob, "evaluate_on_split"):
+            return None, False
+        code = population[0].get("code")
+        if code is None:
+            return None, True
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(interface_prob.evaluate_on_split, code, "holdout")
+                holdout_fitness = future.result(timeout=max(20, self.timeout * 2))
+                future.cancel()
+            if holdout_fitness is None:
+                return None, True
+            return float(holdout_fitness), True
+        except Exception:
+            return None, True
 
     # run eoh 
     def run(self):
@@ -262,17 +339,34 @@ class EOH:
         # main loop
         n_op = len(self.operators)
         prev_best = population[0]["objective"] if len(population) > 0 else None
-        stagnation_count = 0
+        no_improve_gens = 0
         last_invalid_rate = 0.0
         last_improved = False
+        recent_ops = []
+        recent_deltas = []
+        last_diversity = self._population_diversity(population)
+        prev_avg_code_length = self._population_avg_code_length(population)
+        last_code_length_growth = None
+        last_overfit_risk = False
+        last_holdout_fitness = None
+        last_train_at_holdout = None
 
         for pop in range(n_start, self.n_pop):
             generation_offspring = []
             chosen_operator = None
             diagnosis_label = "DEFAULT"
+            routed_delta_best = None
 
             if self.mode == "routed":
-                diagnosis_label = self._diagnose(last_improved, stagnation_count, last_invalid_rate)
+                diagnosis_label = self._diagnose_routed(
+                    last_improved=last_improved,
+                    no_improve_gens=no_improve_gens,
+                    overfit_risk=last_overfit_risk,
+                    recent_ops=recent_ops,
+                    recent_deltas=recent_deltas,
+                    diversity=last_diversity,
+                    code_length_growth=last_code_length_growth,
+                )
                 chosen_operator = self._route_operator(diagnosis_label)
                 print(f" OP: {chosen_operator}, [routed] ", end="|")
                 best_before = self._best_objective(population)
@@ -291,6 +385,7 @@ class EOH:
                 delta_best = None
                 if best_before is not None and best_after is not None:
                     delta_best = float(best_before - best_after)
+                routed_delta_best = delta_best
                 op_record = {
                     "gen": int(pop + 1),
                     "mode": self.mode,
@@ -307,8 +402,14 @@ class EOH:
                     "delta_best": self._to_float_or_none(delta_best),
                 }
                 self._write_operator_log(op_record)
+                recent_ops.append(chosen_operator)
+                recent_deltas.append(routed_delta_best)
+                if len(recent_ops) > self.route_recent_window:
+                    recent_ops = recent_ops[-self.route_recent_window:]
+                    recent_deltas = recent_deltas[-self.route_recent_window:]
                 print()
             else:
+                diagnosis_label = "BASELINE_SCHEDULE"
                 chosen_operator = "schedule:" + ",".join(self.operators)
                 for i in range(n_op):
                     op = self.operators[i]
@@ -339,7 +440,7 @@ class EOH:
                         "operator": op,
                         "operator_weight": float(op_w),
                         "executed": bool(executed),
-                        "diagnosis_label": "DEFAULT",
+                        "diagnosis_label": "BASELINE_SCHEDULE",
                         "n_offspring": int(n_offspring),
                         "n_valid": int(n_valid),
                         "n_invalid": int(n_invalid),
@@ -355,36 +456,79 @@ class EOH:
 
             invalid_rate = self._invalid_rate(generation_offspring)
             diversity = self._population_diversity(population)
+            avg_code_length = self._population_avg_code_length(population)
+            if prev_avg_code_length is not None and avg_code_length is not None:
+                last_code_length_growth = float(avg_code_length - prev_avg_code_length)
+            else:
+                last_code_length_growth = None
+            prev_avg_code_length = avg_code_length
             best_fitness = population[0]["objective"] if len(population) > 0 else None
+            train_fitness = best_fitness
 
+            train_delta = None
             if prev_best is None and best_fitness is not None:
                 last_improved = True
-                stagnation_count = 0
+                no_improve_gens = 0
                 prev_best = best_fitness
             elif best_fitness is None:
                 last_improved = False
-                stagnation_count += 1
+                no_improve_gens += 1
             else:
                 improvement = prev_best - best_fitness
+                train_delta = float(improvement)
                 if improvement > self.route_improvement_epsilon:
                     last_improved = True
-                    stagnation_count = 0
+                    no_improve_gens = 0
                     prev_best = best_fitness
                 else:
                     last_improved = False
-                    stagnation_count += 1
+                    no_improve_gens += 1
                     prev_best = min(prev_best, best_fitness)
 
+            holdout_fitness_eval, holdout_evaluated = self._evaluate_best_on_holdout(interface_prob, population, pop)
+            if holdout_evaluated and holdout_fitness_eval is not None:
+                holdout_fitness = holdout_fitness_eval
+                if (
+                    last_holdout_fitness is not None
+                    and last_train_at_holdout is not None
+                    and train_fitness is not None
+                ):
+                    train_improved = (last_train_at_holdout - train_fitness) > self.route_improvement_epsilon
+                    holdout_worsened = (holdout_fitness - last_holdout_fitness) > self.route_improvement_epsilon
+                    last_overfit_risk = bool(train_improved and holdout_worsened)
+                else:
+                    last_overfit_risk = False
+                last_holdout_fitness = holdout_fitness
+                last_train_at_holdout = train_fitness
+            elif holdout_evaluated:
+                holdout_fitness = last_holdout_fitness
+                last_overfit_risk = False
+            else:
+                holdout_fitness = last_holdout_fitness
+
+            if holdout_fitness is not None and train_fitness is not None:
+                fitness_gap = float(holdout_fitness - train_fitness)
+            else:
+                fitness_gap = None
+
             last_invalid_rate = invalid_rate
+            last_diversity = diversity
             run_record = {
                 "gen": int(pop + 1),
                 "mode": self.mode,
                 "best_fitness": best_fitness,
+                "train_fitness": train_fitness,
+                "holdout_fitness": self._to_float_or_none(holdout_fitness),
+                "fitness_gap": self._to_float_or_none(fitness_gap),
                 "chosen_operator": chosen_operator,
                 "diagnosis_label": diagnosis_label,
                 "invalid_rate": invalid_rate,
-                "stagnation_count": int(stagnation_count),
+                "stagnation_count": int(no_improve_gens),
                 "diversity": diversity,
+                "code_length_growth": self._to_float_or_none(last_code_length_growth),
+                "train_delta": self._to_float_or_none(train_delta),
+                "overfit_risk": bool(last_overfit_risk),
+                "holdout_evaluated": bool(holdout_evaluated),
             }
             self._write_run_log(run_record)
 
