@@ -99,11 +99,15 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
 
         def _send(self, code: int, payload: dict):
             body = json.dumps(payload).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # Client timed out/disconnected before response flush.
+                return
 
         def _extract_description(self, text: str):
             m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
