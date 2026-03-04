@@ -67,6 +67,7 @@ class Paras():
         self.route_e1_cooldown = 3
         self.route_e2_recent_k = 3
         self.route_use_probabilistic = True
+        self.route_shuffle_operator_order = False
         self.log_full_population = False
 
 

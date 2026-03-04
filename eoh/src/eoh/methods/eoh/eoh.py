@@ -82,6 +82,7 @@ class EOH:
         self.route_e1_cooldown = max(0, int(getattr(paras, "route_e1_cooldown", 3)))
         self.route_e2_recent_k = max(1, int(getattr(paras, "route_e2_recent_k", 3)))
         self.route_use_probabilistic = bool(getattr(paras, "route_use_probabilistic", True))
+        self.route_shuffle_operator_order = bool(getattr(paras, "route_shuffle_operator_order", False))
         self.holdout_eval_interval = max(1, int(getattr(paras, "holdout_eval_interval", 1)))
         self.log_full_population = bool(getattr(paras, "log_full_population", False))
         self.run_log_path = os.path.join(self.output_path, "results", "run_log.jsonl")
@@ -778,6 +779,9 @@ class EOH:
                         fallback_op = self.controller.sample_operator(active_op_probs, self.operators)
                         sampled_ops = [fallback_op]
                         op_execution_plan = [(fallback_op, 1)]
+                    if self.route_shuffle_operator_order and len(op_execution_plan) > 1:
+                        op_execution_plan = list(op_execution_plan)
+                        random.shuffle(op_execution_plan)
                     chosen_operator = "mixture:" + ",".join(f"{op}x{cnt}" for op, cnt in op_execution_plan)
                     self._write_agent_critic_log(
                         {
@@ -789,6 +793,7 @@ class EOH:
                             "chosen_operator": chosen_operator,
                             "sampled_ops": sampled_ops,
                             "operator_plan": [{"operator": op, "count": int(cnt)} for op, cnt in op_execution_plan],
+                            "shuffle_operator_order": bool(self.route_shuffle_operator_order),
                             "pure_llm_output": bool(critic_debug.get("flags", {}).get("pure_llm_output", False)),
                             "llm_output_patched": bool(critic_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(critic_debug.get("flags", {}).get("fully_fallback", False)),
@@ -913,6 +918,8 @@ class EOH:
                         "operator": op_exec,
                         "operator_weight": None,
                         "executed": True,
+                        "execution_rank": int(i_exec + 1),
+                        "shuffle_operator_order": bool(self.route_shuffle_operator_order),
                         "diagnosis_label": diagnosis_label,
                         "n_offspring": int(n_offspring),
                         "planned_offspring": int(planned_count),
@@ -1081,6 +1088,7 @@ class EOH:
                 "holdout_evaluated": bool(holdout_evaluated),
                 "controller_enabled": bool(self.controller is not None),
                 "controller_use_critic": bool(self.route_controller_use_critic),
+                "shuffle_operator_order": bool(self.route_shuffle_operator_order),
                 "parent_mix": active_parent_mix,
                 "prompt_modifiers": active_prompt_modifiers,
                 "op_probs": active_op_probs,
