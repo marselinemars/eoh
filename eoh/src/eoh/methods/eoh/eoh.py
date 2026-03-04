@@ -321,23 +321,34 @@ class EOH:
             if len(records) == 0:
                 continue
             calls = len(records)
-            success_count = 0
-            deltas = []
-            invalids = []
+            total_offspring = 0
+            total_valid = 0
+            weighted_delta_num = 0.0
+            weighted_delta_den = 0.0
+            total_invalid = 0
             for rec in records:
                 n_valid = int(rec.get("n_valid", 0) or 0)
                 n_off = int(rec.get("n_offspring", 0) or 0)
-                if n_valid > 0:
-                    success_count += 1
+                n_invalid = int(rec.get("n_invalid", max(0, n_off - n_valid)) or 0)
+                total_offspring += max(0, n_off)
+                total_valid += max(0, n_valid)
+                total_invalid += max(0, n_invalid)
                 delta = rec.get("delta_best")
-                if delta is not None:
-                    deltas.append(float(delta))
-                invalids.append(self._safe_float(rec.get("invalid_rate", 1.0), default=1.0))
+                if delta is not None and n_off > 0:
+                    weighted_delta_num += float(delta) * float(n_off)
+                    weighted_delta_den += float(n_off)
+            if total_offspring > 0:
+                success_rate = float(total_valid / total_offspring)
+                invalid_rate = float(total_invalid / total_offspring)
+            else:
+                success_rate = 0.0
+                invalid_rate = 1.0
+            mean_delta = float(weighted_delta_num / weighted_delta_den) if weighted_delta_den > 0 else 0.0
             stats[op] = {
                 "calls": int(calls),
-                "success_rate": float(success_count / calls),
-                "mean_delta": float(np.mean(np.array(deltas))) if len(deltas) > 0 else 0.0,
-                "invalid_rate": float(np.mean(np.array(invalids))) if len(invalids) > 0 else 1.0,
+                "success_rate": success_rate,
+                "mean_delta": mean_delta,
+                "invalid_rate": invalid_rate,
             }
         return stats
 
@@ -427,6 +438,17 @@ class EOH:
             if draw <= cum:
                 return op
         return candidates[-1][0]
+
+    def _sample_routed_operator_batch(self, op_probs, total_offspring):
+        budget = max(1, int(total_offspring))
+        sampled_ops = []
+        for _ in range(budget):
+            sampled_ops.append(self.controller.sample_operator(op_probs, self.operators))
+        op_counts = {}
+        for op in sampled_ops:
+            op_counts[op] = op_counts.get(op, 0) + 1
+        ordered = [(op, op_counts[op]) for op in self.operators if op in op_counts and op_counts[op] > 0]
+        return sampled_ops, ordered
 
     def _should_structural_edit(self, no_improve_gens, recent_ops, recent_deltas, diversity, code_length_growth):
         if no_improve_gens < 2:
@@ -748,7 +770,15 @@ class EOH:
                         parent_mix=active_parent_mix,
                         prompt_modifiers=active_prompt_modifiers,
                     )
-                    chosen_operator = self.controller.sample_operator(active_op_probs, self.operators)
+                    sampled_ops, op_execution_plan = self._sample_routed_operator_batch(
+                        active_op_probs,
+                        self.pop_size,
+                    )
+                    if len(op_execution_plan) == 0:
+                        fallback_op = self.controller.sample_operator(active_op_probs, self.operators)
+                        sampled_ops = [fallback_op]
+                        op_execution_plan = [(fallback_op, 1)]
+                    chosen_operator = "mixture:" + ",".join(f"{op}x{cnt}" for op, cnt in op_execution_plan)
                     self._write_agent_critic_log(
                         {
                             "gen": int(pop + 1),
@@ -757,6 +787,8 @@ class EOH:
                             "reasons": critic_output.get("reasons"),
                             "final_plan": final_plan,
                             "chosen_operator": chosen_operator,
+                            "sampled_ops": sampled_ops,
+                            "operator_plan": [{"operator": op, "count": int(cnt)} for op, cnt in op_execution_plan],
                             "pure_llm_output": bool(critic_debug.get("flags", {}).get("pure_llm_output", False)),
                             "llm_output_patched": bool(critic_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(critic_debug.get("flags", {}).get("fully_fallback", False)),
@@ -852,57 +884,68 @@ class EOH:
                         best_at_last_e2=best_at_last_e2,
                         e1_cooldown_remaining=e1_cooldown_remaining,
                     )
-                print(f" OP: {chosen_operator}, [routed] ", end="|")
-                best_before = self._best_objective(population)
-                _, offsprings = interface_ec.get_algorithm(population, chosen_operator)
-                self.add2pop(population, offsprings)
-                generation_offspring.extend(offsprings)
-                for off in offsprings:
-                    print(" Obj: ", off["objective"], end="|")
-                size_act = min(len(population), self.pop_size)
-                population = self.manage.population_management(population, size_act)
-                best_after = self._best_objective(population)
-                n_offspring = len(offsprings)
-                n_valid = self._count_valid(offsprings)
-                n_invalid = n_offspring - n_valid
-                invalid_rate_op = (n_invalid / n_offspring) if n_offspring > 0 else 1.0
-                delta_best = None
-                if best_before is not None and best_after is not None:
-                    delta_best = float(best_before - best_after)
-                routed_delta_best = delta_best
-                op_record = {
-                    "gen": int(pop + 1),
-                    "mode": self.mode,
-                    "operator": chosen_operator,
-                    "operator_weight": None,
-                    "executed": True,
-                    "diagnosis_label": diagnosis_label,
-                    "n_offspring": int(n_offspring),
-                    "n_valid": int(n_valid),
-                    "n_invalid": int(n_invalid),
-                    "invalid_rate": float(invalid_rate_op),
-                    "best_before": self._to_float_or_none(best_before),
-                    "best_after": self._to_float_or_none(best_after),
-                    "delta_best": self._to_float_or_none(delta_best),
-                    "op_probs": active_op_probs,
-                    "parent_mix": active_parent_mix,
-                    "prompt_modifiers": active_prompt_modifiers,
-                }
-                self._write_operator_log(op_record)
-                op_history.append(op_record)
-                last_used_ops.append(chosen_operator)
-                recent_ops.append(chosen_operator)
-                recent_deltas.append(routed_delta_best)
+                    sampled_ops = [chosen_operator]
+                    op_execution_plan = [(chosen_operator, self.pop_size)]
+                executed_ops = []
+                executed_deltas = []
+                for i_exec, (op_exec, planned_count) in enumerate(op_execution_plan):
+                    print(f" OP: {op_exec}, [{i_exec + 1} / {len(op_execution_plan)}], n={int(planned_count)} ", end="|")
+                    best_before = self._best_objective(population)
+                    _, offsprings = interface_ec.get_algorithm(population, op_exec, n_offspring=planned_count)
+                    self.add2pop(population, offsprings)
+                    generation_offspring.extend(offsprings)
+                    for off in offsprings:
+                        print(" Obj: ", off["objective"], end="|")
+                    size_act = min(len(population), self.pop_size)
+                    population = self.manage.population_management(population, size_act)
+                    best_after = self._best_objective(population)
+                    n_offspring = len(offsprings)
+                    n_valid = self._count_valid(offsprings)
+                    n_invalid = n_offspring - n_valid
+                    invalid_rate_op = (n_invalid / n_offspring) if n_offspring > 0 else 1.0
+                    delta_best = None
+                    if best_before is not None and best_after is not None:
+                        delta_best = float(best_before - best_after)
+                    routed_delta_best = delta_best
+                    op_record = {
+                        "gen": int(pop + 1),
+                        "mode": self.mode,
+                        "operator": op_exec,
+                        "operator_weight": None,
+                        "executed": True,
+                        "diagnosis_label": diagnosis_label,
+                        "n_offspring": int(n_offspring),
+                        "planned_offspring": int(planned_count),
+                        "n_valid": int(n_valid),
+                        "n_invalid": int(n_invalid),
+                        "invalid_rate": float(invalid_rate_op),
+                        "best_before": self._to_float_or_none(best_before),
+                        "best_after": self._to_float_or_none(best_after),
+                        "delta_best": self._to_float_or_none(delta_best),
+                        "op_probs": active_op_probs,
+                        "parent_mix": active_parent_mix,
+                        "prompt_modifiers": active_prompt_modifiers,
+                    }
+                    self._write_operator_log(op_record)
+                    op_history.append(op_record)
+                    executed_ops.append(op_exec)
+                    executed_deltas.append(routed_delta_best)
+                    if op_exec == "e2" and best_after is not None:
+                        best_at_last_e2 = float(best_after)
+                    print()
+                if self.controller is not None:
+                    last_used_ops.extend(sampled_ops)
+                else:
+                    last_used_ops.extend(executed_ops)
+                recent_ops.extend(executed_ops)
+                recent_deltas.extend(executed_deltas)
                 if len(recent_ops) > self.route_recent_window:
                     recent_ops = recent_ops[-self.route_recent_window:]
                     recent_deltas = recent_deltas[-self.route_recent_window:]
-                if chosen_operator == "e2" and best_after is not None:
-                    best_at_last_e2 = float(best_after)
-                if chosen_operator == "e1":
+                if any(op == "e1" for op in sampled_ops):
                     e1_cooldown_remaining = self.route_e1_cooldown
                 elif e1_cooldown_remaining > 0:
                     e1_cooldown_remaining -= 1
-                print()
             else:
                 interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None)
                 diagnosis_label = "BASELINE_SCHEDULE"

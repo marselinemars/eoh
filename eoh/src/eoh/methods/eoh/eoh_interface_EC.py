@@ -295,7 +295,18 @@ class InterfaceEC():
     #     return result
 
     
-    def get_algorithm(self, pop, operator):
+    def get_algorithm(self, pop, operator, n_offspring=None):
+        if n_offspring is None:
+            n_targets = int(self.pop_size)
+        else:
+            try:
+                n_targets = int(n_offspring)
+            except (TypeError, ValueError):
+                n_targets = int(self.pop_size)
+        n_targets = max(0, n_targets)
+        if n_targets == 0:
+            return [], []
+
         results = []
         try:
             results = Parallel(
@@ -303,7 +314,7 @@ class InterfaceEC():
                 timeout=self.timeout + 15,
                 backend=self.parallel_backend,
                 batch_size=1,
-            )(delayed(self.get_offspring)(pop, operator) for _ in range(self.pop_size))
+            )(delayed(self.get_offspring)(pop, operator) for _ in range(n_targets))
         except Exception as e:
             if self.debug:
                 print(f"Error: {e}")
