@@ -651,6 +651,9 @@ class EOH:
             diagnoser_stage_flags = {}
             planner_stage_flags = {}
             critic_stage_flags = {}
+            diag_debug = {}
+            plan_debug = {}
+            critic_debug = {}
 
             if self.mode == "routed":
                 if self.controller is not None:
@@ -703,7 +706,13 @@ class EOH:
                             "llm_output_patched": bool(diag_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(diag_debug.get("flags", {}).get("fully_fallback", False)),
                             "fallback_used": bool(diag_debug.get("sanitize", {}).get("fallback_used", False)),
+                            "llm_success": bool(diag_debug.get("llm", {}).get("llm_success", False)),
+                            "llm_mode": str(diag_debug.get("llm", {}).get("llm_mode", "")),
+                            "parse_ok": bool(diag_debug.get("llm", {}).get("parse_ok", False)),
+                            "validation_ok": bool(diag_debug.get("llm", {}).get("validation_ok", False)),
                             "retries_used": int(diag_debug.get("llm", {}).get("retries_used", 0) or 0),
+                            "repair_used": bool(diag_debug.get("llm", {}).get("repair_used", False)),
+                            "failure_reason": str(diag_debug.get("llm", {}).get("failure_reason", "")),
                             "validation_errors": diag_debug.get("llm", {}).get("last_errors", []),
                             "sanitize_patches": diag_debug.get("sanitize", {}).get("patches", []),
                         }
@@ -722,7 +731,13 @@ class EOH:
                             "llm_output_patched": bool(plan_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(plan_debug.get("flags", {}).get("fully_fallback", False)),
                             "fallback_used": bool(plan_debug.get("sanitize", {}).get("fallback_used", False)),
+                            "llm_success": bool(plan_debug.get("llm", {}).get("llm_success", False)),
+                            "llm_mode": str(plan_debug.get("llm", {}).get("llm_mode", "")),
+                            "parse_ok": bool(plan_debug.get("llm", {}).get("parse_ok", False)),
+                            "validation_ok": bool(plan_debug.get("llm", {}).get("validation_ok", False)),
                             "retries_used": int(plan_debug.get("llm", {}).get("retries_used", 0) or 0),
+                            "repair_used": bool(plan_debug.get("llm", {}).get("repair_used", False)),
+                            "failure_reason": str(plan_debug.get("llm", {}).get("failure_reason", "")),
                             "validation_errors": plan_debug.get("llm", {}).get("last_errors", []),
                             "sanitize_patches": plan_debug.get("sanitize", {}).get("patches", []),
                         }
@@ -743,7 +758,13 @@ class EOH:
                             "pure_llm_output": bool(critic_debug.get("flags", {}).get("pure_llm_output", False)),
                             "llm_output_patched": bool(critic_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(critic_debug.get("flags", {}).get("fully_fallback", False)),
+                            "llm_success": bool(critic_debug.get("llm", {}).get("llm_success", False)),
+                            "llm_mode": str(critic_debug.get("llm", {}).get("llm_mode", "")),
+                            "parse_ok": bool(critic_debug.get("llm", {}).get("parse_ok", False)),
+                            "validation_ok": bool(critic_debug.get("llm", {}).get("validation_ok", False)),
                             "retries_used": int(critic_debug.get("llm", {}).get("retries_used", 0) or 0),
+                            "repair_used": bool(critic_debug.get("llm", {}).get("repair_used", False)),
+                            "failure_reason": str(critic_debug.get("llm", {}).get("failure_reason", "")),
                             "validation_errors": critic_debug.get("llm", {}).get("last_errors", []),
                             "sanitize_patches": critic_debug.get("sanitize", {}).get("patches", []),
                         }
@@ -757,6 +778,12 @@ class EOH:
                             "retries_used": int(diag_debug.get("llm", {}).get("retries_used", 0) or 0),
                             "last_errors": diag_debug.get("llm", {}).get("last_errors", []),
                             "fallback_used": bool(diag_debug.get("sanitize", {}).get("fallback_used", False)),
+                            "llm_success": bool(diag_debug.get("llm", {}).get("llm_success", False)),
+                            "llm_mode": str(diag_debug.get("llm", {}).get("llm_mode", "")),
+                            "parse_ok": bool(diag_debug.get("llm", {}).get("parse_ok", False)),
+                            "validation_ok": bool(diag_debug.get("llm", {}).get("validation_ok", False)),
+                            "repair_used": bool(diag_debug.get("llm", {}).get("repair_used", False)),
+                            "failure_reason": str(diag_debug.get("llm", {}).get("failure_reason", "")),
                             "pure_llm_output": bool(diag_debug.get("flags", {}).get("pure_llm_output", False)),
                             "llm_output_patched": bool(diag_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(diag_debug.get("flags", {}).get("fully_fallback", False)),
@@ -771,6 +798,12 @@ class EOH:
                             "retries_used": int(plan_debug.get("llm", {}).get("retries_used", 0) or 0),
                             "last_errors": plan_debug.get("llm", {}).get("last_errors", []),
                             "fallback_used": bool(plan_debug.get("sanitize", {}).get("fallback_used", False)),
+                            "llm_success": bool(plan_debug.get("llm", {}).get("llm_success", False)),
+                            "llm_mode": str(plan_debug.get("llm", {}).get("llm_mode", "")),
+                            "parse_ok": bool(plan_debug.get("llm", {}).get("parse_ok", False)),
+                            "validation_ok": bool(plan_debug.get("llm", {}).get("validation_ok", False)),
+                            "repair_used": bool(plan_debug.get("llm", {}).get("repair_used", False)),
+                            "failure_reason": str(plan_debug.get("llm", {}).get("failure_reason", "")),
                             "pure_llm_output": bool(plan_debug.get("flags", {}).get("pure_llm_output", False)),
                             "llm_output_patched": bool(plan_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(plan_debug.get("flags", {}).get("fully_fallback", False)),
@@ -784,6 +817,12 @@ class EOH:
                             "attempts": critic_debug.get("llm", {}).get("attempts", []),
                             "retries_used": int(critic_debug.get("llm", {}).get("retries_used", 0) or 0),
                             "last_errors": critic_debug.get("llm", {}).get("last_errors", []),
+                            "llm_success": bool(critic_debug.get("llm", {}).get("llm_success", False)),
+                            "llm_mode": str(critic_debug.get("llm", {}).get("llm_mode", "")),
+                            "parse_ok": bool(critic_debug.get("llm", {}).get("parse_ok", False)),
+                            "validation_ok": bool(critic_debug.get("llm", {}).get("validation_ok", False)),
+                            "repair_used": bool(critic_debug.get("llm", {}).get("repair_used", False)),
+                            "failure_reason": str(critic_debug.get("llm", {}).get("failure_reason", "")),
                             "pure_llm_output": bool(critic_debug.get("flags", {}).get("pure_llm_output", False)),
                             "llm_output_patched": bool(critic_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(critic_debug.get("flags", {}).get("fully_fallback", False)),
@@ -1000,12 +1039,21 @@ class EOH:
                 "diagnoser_fully_fallback": bool(diagnoser_stage_flags.get("fully_fallback", False)),
                 "diagnoser_llm_patched": bool(diagnoser_stage_flags.get("llm_output_patched", False)),
                 "diagnoser_pure_llm": bool(diagnoser_stage_flags.get("pure_llm_output", False)),
+                "diagnoser_llm_success": bool(diag_debug.get("llm", {}).get("llm_success", False)) if self.mode == "routed" and self.controller is not None else False,
+                "diagnoser_parse_ok": bool(diag_debug.get("llm", {}).get("parse_ok", False)) if self.mode == "routed" and self.controller is not None else False,
+                "diagnoser_validation_ok": bool(diag_debug.get("llm", {}).get("validation_ok", False)) if self.mode == "routed" and self.controller is not None else False,
                 "planner_fully_fallback": bool(planner_stage_flags.get("fully_fallback", False)),
                 "planner_llm_patched": bool(planner_stage_flags.get("llm_output_patched", False)),
                 "planner_pure_llm": bool(planner_stage_flags.get("pure_llm_output", False)),
+                "planner_llm_success": bool(plan_debug.get("llm", {}).get("llm_success", False)) if self.mode == "routed" and self.controller is not None else False,
+                "planner_parse_ok": bool(plan_debug.get("llm", {}).get("parse_ok", False)) if self.mode == "routed" and self.controller is not None else False,
+                "planner_validation_ok": bool(plan_debug.get("llm", {}).get("validation_ok", False)) if self.mode == "routed" and self.controller is not None else False,
                 "critic_fully_fallback": bool(critic_stage_flags.get("fully_fallback", False)),
                 "critic_llm_patched": bool(critic_stage_flags.get("llm_output_patched", False)),
                 "critic_pure_llm": bool(critic_stage_flags.get("pure_llm_output", False)),
+                "critic_llm_success": bool(critic_debug.get("llm", {}).get("llm_success", False)) if self.mode == "routed" and self.controller is not None else False,
+                "critic_parse_ok": bool(critic_debug.get("llm", {}).get("parse_ok", False)) if self.mode == "routed" and self.controller is not None else False,
+                "critic_validation_ok": bool(critic_debug.get("llm", {}).get("validation_ok", False)) if self.mode == "routed" and self.controller is not None else False,
             }
             self._write_run_log(run_record)
 

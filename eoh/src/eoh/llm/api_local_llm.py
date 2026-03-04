@@ -18,12 +18,18 @@ class InterfaceLocalLLM:
         self._top_p = float(os.getenv("EOH_LOCAL_LLM_TOP_P", "0.95"))
         self._max_new_tokens = int(os.getenv("EOH_LOCAL_LLM_MAX_NEW_TOKENS", "1200"))
 
-    def get_response(self, content: str) -> str:
+    def get_response(self, content: str, request_mode="code", tool_name=None, json_schema=None, stop=None) -> str:
         n_try = 0
         while True:
             try:
                 n_try += 1
-                response = self._do_request(content)
+                response = self._do_request(
+                    content,
+                    request_mode=request_mode,
+                    tool_name=tool_name,
+                    json_schema=json_schema,
+                    stop=stop,
+                )
                 return response
             except Exception as exc:
                 print(f"Local LLM request failed (try={n_try}): {exc}")
@@ -43,23 +49,37 @@ class InterfaceLocalLLM:
         ]
         return any(marker in content for marker in markers)
 
-    def _do_request(self, content: str) -> str:
+    def _do_request(self, content: str, request_mode="code", tool_name=None, json_schema=None, stop=None) -> str:
         content = content.strip('\n').strip()
-        response_mode = "json" if self._is_controller_json_prompt(content) else "code"
+        if request_mode == "json":
+            response_mode = "json"
+        elif request_mode == "tool":
+            response_mode = "json"
+        elif request_mode == "code":
+            response_mode = "code"
+        else:
+            response_mode = "json" if self._is_controller_json_prompt(content) else "code"
         # repeat the prompt for batch inference (inorder to decease the sample delay)
+        params = {
+            'eoh_response_mode': response_mode,
+            'do_sample': self._do_sample,
+            'temperature': self._temperature,
+            'top_k': None,
+            'top_p': self._top_p,
+            'max_new_tokens': self._max_new_tokens,
+            'add_special_tokens': False,
+            'skip_special_tokens': True,
+        }
+        if tool_name is not None:
+            params["eoh_tool_name"] = str(tool_name)
+        if json_schema is not None:
+            params["eoh_json_schema"] = json_schema
+        if stop is not None:
+            params["stop"] = stop
         data = {
             'prompt': content,
             'repeat_prompt': 1,
-            'params': {
-                'eoh_response_mode': response_mode,
-                'do_sample': self._do_sample,
-                'temperature': self._temperature,
-                'top_k': None,
-                'top_p': self._top_p,
-                'max_new_tokens': self._max_new_tokens,
-                'add_special_tokens': False,
-                'skip_special_tokens': True,
-            }
+            'params': params
         }
         headers = {'Content-Type': 'application/json'}
         response = requests.post(self._url, data=json.dumps(data), headers=headers, timeout=self._timeout_s)

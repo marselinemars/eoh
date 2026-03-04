@@ -48,13 +48,23 @@ class InterfaceLLM:
                 self.debug_mode,
             )
 
-        res = self.interface_llm.get_response("1+1=?")
-        self._log_interaction("1+1=?", res, stage="startup_probe")
+        res = self.interface_llm.get_response("1+1=?", request_mode="code")
+        self._log_interaction("1+1=?", res, stage="startup_probe", request_mode="code")
         if res is None:
             print(">> Error in LLM API, wrong endpoint, key, model or local deployment!")
             exit()
 
-    def _log_interaction(self, prompt_content, response, stage, error=None):
+    def _log_interaction(
+        self,
+        prompt_content,
+        response,
+        stage,
+        error=None,
+        request_mode="code",
+        tool_name=None,
+        json_schema=None,
+        stop=None,
+    ):
         if not self.log_llm_io:
             return
         self._request_id += 1
@@ -70,15 +80,42 @@ class InterfaceLLM:
             "prompt_chars": len(prompt_content) if prompt_content is not None else 0,
             "response_chars": len(response) if isinstance(response, str) else 0,
             "error": error,
+            "request_mode": request_mode,
+            "tool_name": tool_name,
+            "json_schema": json_schema,
+            "stop": stop,
         }
         with self.llm_io_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
-    def get_response(self, prompt_content):
+    def get_response(self, prompt_content, request_mode="code", tool_name=None, json_schema=None, stop=None):
         try:
-            response = self.interface_llm.get_response(prompt_content)
-            self._log_interaction(prompt_content, response, stage="generation")
+            response = self.interface_llm.get_response(
+                prompt_content,
+                request_mode=request_mode,
+                tool_name=tool_name,
+                json_schema=json_schema,
+                stop=stop,
+            )
+            self._log_interaction(
+                prompt_content,
+                response,
+                stage="generation",
+                request_mode=request_mode,
+                tool_name=tool_name,
+                json_schema=json_schema,
+                stop=stop,
+            )
         except Exception as exc:
-            self._log_interaction(prompt_content, None, stage="generation", error=str(exc))
+            self._log_interaction(
+                prompt_content,
+                None,
+                stage="generation",
+                error=str(exc),
+                request_mode=request_mode,
+                tool_name=tool_name,
+                json_schema=json_schema,
+                stop=stop,
+            )
             raise
         return response

@@ -38,84 +38,78 @@ Maximize search efficiency and final best fitness by adapting operator usage ove
 """
 
 
-DIAGNOSER_PROMPT_TEMPLATE = """{PROJECT_CONTEXT}
-
-ROLE: Agent 1 - DIAGNOSER
-
-Task:
-Read ObservationPacket and infer the current search state.
-Output continuous diagnosis factors in [0,1] and evidence-grounded labels.
-
-Hard constraints:
-1) You MUST explicitly reference these telemetry fields in evidence:
-   - stagnation_len
-   - diversity_score
-   - invalid_rate_k
-2) You MUST identify the top operator by recent mean_delta from op_stats_k and cite it.
-3) diagnosis_labels must contain at least 2 labels.
-4) evidence must contain at least 2 bullets.
-5) Do NOT propose actions/operators.
-
-OUTPUT FORMAT (MANDATORY):
-Return ONLY valid JSON with EXACT keys below (no markdown, no extra keys):
+DIAGNOSER_PROMPT_TEMPLATE = """OUTPUT JSON ONLY. Do NOT include any text outside JSON.
+JSON SCHEMA (EXACT KEYS):
 {{
-  "summary": string,
+  "summary": "string",
   "factors": {{
-    "exploration_need": number,
-    "exploitation_need": number,
-    "diversity_need": number,
-    "invalid_risk": number,
-    "overfit_risk": number,
-    "confidence": number
+    "exploration_need": 0.0,
+    "exploitation_need": 0.0,
+    "diversity_need": 0.0,
+    "invalid_risk": 0.0,
+    "overfit_risk": 0.0,
+    "confidence": 0.0
   }},
-  "diagnosis_labels": [string, ...],
-  "evidence": [string, ...]
+  "diagnosis_labels": ["string", "string"],
+  "evidence": ["string", "string"]
 }}
-
+VALID EXAMPLE:
+{{"summary":"Stagnation and low diversity.","factors":{{"exploration_need":0.72,"exploitation_need":0.31,"diversity_need":0.68,"invalid_risk":0.12,"overfit_risk":0.26,"confidence":0.83}},"diagnosis_labels":["STAGNATION","LOW_DIVERSITY"],"evidence":["stagnation_len=4 and improve_rate_k=0.0 indicate plateau.","diversity_score=0.30 and invalid_rate_k=0.08 support safe exploration.","Top mean_delta operator is e2 from op_stats_k.e2.mean_delta=0.0024."]}}
+{PROJECT_CONTEXT}
+ROLE: Agent 1 - DIAGNOSER
+Task: infer search state from ObservationPacket.
+Hard constraints:
+- Reference stagnation_len, diversity_score, invalid_rate_k, and top operator by mean_delta in summary/evidence.
+- diagnosis_labels length >= 2 and evidence length >= 2.
+- Do not propose actions/operators.
 ObservationPacket:
 {OBS_JSON}
 """
 
 
-PLANNER_PROMPT_TEMPLATE = """{PROJECT_CONTEXT}
-
-ROLE: Agent 2 - PLANNER
-
-Task:
-Given DiagnosisOutput and ObservationPacket, produce a plan for NEXT generation.
-
-Hard constraints:
-1) op_probs and parent_mix must each sum to exactly 1.0.
-2) Uniform op_probs are banned. (max(op_probs)-min(op_probs) must be >= 0.15)
-3) Compute operator preference from op_stats_k:
-   - Set the largest op probability to the operator with highest recent mean_delta
-     unless that operator has high invalid_rate (> 0.40).
-4) rationale must include at least 2 citations to specific telemetry fields
-   (e.g., stagnation_len, invalid_rate_k, diversity_score, op_stats_k.e2.mean_delta).
-5) Keep prompt_modifiers short and safe (1-4).
-
-OUTPUT FORMAT (MANDATORY):
-Return ONLY valid JSON with EXACT keys below (no markdown, no extra keys):
+PLANNER_PROMPT_TEMPLATE = """OUTPUT JSON ONLY. Do NOT include any text outside JSON.
+JSON SCHEMA (EXACT KEYS):
 {{
-  "diagnosis_used": string,
-  "op_probs": {{"e1": number, "e2": number, "m1": number, "m2": number, "m3": number}},
-  "parent_mix": {{"elite": number, "diverse": number, "random": number}},
-  "prompt_modifiers": [string, ...],
-  "evaluation_plan": {{"instances": number, "holdout_instances": number}},
-  "rationale": [string, ...]
+  "diagnosis_used": "string",
+  "op_probs": {{"e1": 0.0, "e2": 0.0, "m1": 0.0, "m2": 0.0, "m3": 0.0}},
+  "parent_mix": {{"elite": 0.0, "diverse": 0.0, "random": 0.0}},
+  "prompt_modifiers": ["string"],
+  "evaluation_plan": {{"instances": 0, "holdout_instances": 0}},
+  "rationale": ["string", "string"]
 }}
-
-Inputs:
+VALID EXAMPLE:
+{{"diagnosis_used":"Stagnation with low invalid risk.","op_probs":{{"e1":0.02,"e2":0.56,"m1":0.16,"m2":0.18,"m3":0.08}},"parent_mix":{{"elite":0.48,"diverse":0.32,"random":0.20}},"prompt_modifiers":["Keep scoring function simple.","Avoid many new constants."],"evaluation_plan":{{"instances":256,"holdout_instances":0}},"rationale":["stagnation_len=4 and improve_rate_k=0.0 justify structured exploration.","op_stats_k.e2.mean_delta is highest while invalid_rate_k remains low."]}}
+{PROJECT_CONTEXT}
+ROLE: Agent 2 - PLANNER
+Task: build next-generation action plan from DiagnosisOutput + ObservationPacket.
+Hard constraints:
+- op_probs and parent_mix each sum to exactly 1.0.
+- Uniform op_probs are banned; require spread >= 0.15.
+- Largest op_probs entry must be highest recent mean_delta operator unless invalid_rate > 0.40.
+- rationale must cite at least two telemetry fields.
+- prompt_modifiers size 1-4.
 DiagnosisOutput:
 {DIAG_JSON}
-
 ObservationPacket:
 {OBS_JSON}
 """
 
 
-CRITIC_PROMPT_TEMPLATE = """{PROJECT_CONTEXT}
-
+CRITIC_PROMPT_TEMPLATE = """OUTPUT JSON ONLY. Do NOT include any text outside JSON.
+JSON SCHEMA (EXACT KEYS):
+{{
+  "verdict": "approve",
+  "reasons": ["string"],
+  "final_plan": {{
+    "op_probs": {{"e1": 0.0, "e2": 0.0, "m1": 0.0, "m2": 0.0, "m3": 0.0}},
+    "parent_mix": {{"elite": 0.0, "diverse": 0.0, "random": 0.0}},
+    "prompt_modifiers": ["string"],
+    "evaluation_plan": {{"instances": 0, "holdout_instances": 0}}
+  }}
+}}
+VALID EXAMPLE:
+{{"verdict":"revise","reasons":["Applied e1 cooldown.","Raised e2 to floor 0.25."],"final_plan":{{"op_probs":{{"e1":0.00,"e2":0.48,"m1":0.12,"m2":0.24,"m3":0.16}},"parent_mix":{{"elite":0.50,"diverse":0.30,"random":0.20}},"prompt_modifiers":["Keep logic shallow."],"evaluation_plan":{{"instances":256,"holdout_instances":0}}}}}}
+{PROJECT_CONTEXT}
 ROLE: Agent 3 - CRITIC / SAFETY
 
 Task:
@@ -478,64 +472,176 @@ class AgenticController:
             errors.append("final_plan must be object")
         return errors
 
-    def call_llm_json(self, prompt, schema_name, validator, corrective_schema_hint):
+    def _resolve_llm_mode(self, mode, tool_name=None):
+        if mode == "tool" and tool_name:
+            return "tool_call"
+        if mode == "json":
+            return "json_mode"
+        return "plain_prompt"
+
+    def _build_retry_prompt(self, prompt, corrective_schema_hint, errors):
+        error_text = "\n".join(f"- {e}" for e in (errors or [])[:8]) or "- unknown_error"
+        return (
+            prompt
+            + "\n\nYour previous output was invalid.\n"
+            + "Output ONLY valid JSON matching the schema.\n"
+            + f"Schema reminder: {corrective_schema_hint}\n"
+            + "Fix these errors:\n"
+            + error_text
+        )
+
+    def _build_repair_prompt(self, schema_name, corrective_schema_hint, raw_output, errors):
+        error_text = "\n".join(f"- {e}" for e in (errors or [])[:10]) or "- invalid_json_or_schema"
+        return (
+            "OUTPUT JSON ONLY. Do NOT include any text outside JSON.\n"
+            + f"Target schema ({schema_name}): {corrective_schema_hint}\n"
+            + "Fix these errors exactly:\n"
+            + error_text
+            + "\nRaw output to repair:\n"
+            + "<<<RAW_OUTPUT>>>\n"
+            + str(raw_output if raw_output is not None else "")
+            + "\n<<<END_RAW_OUTPUT>>>\n"
+            + "Return ONLY corrected JSON object."
+        )
+
+    def _attempt_llm_json(self, prompt, validator, mode, tool_name, corrective_schema_hint, phase, cycle):
+        raw = None
+        parsed = None
+        errors = []
+        api_error = None
+        parse_ok = False
+        validation_ok = False
+        try:
+            raw = self.interface_llm.get_response(
+                prompt,
+                request_mode=mode,
+                tool_name=tool_name,
+                json_schema=None,
+                stop=None,
+            )
+        except Exception as exc:
+            api_error = f"api_error: {exc}"
+            errors.append(api_error)
+
+        if api_error is None:
+            parsed = _try_parse_json_object(raw)
+            parse_ok = parsed is not None
+            if not parse_ok:
+                errors.append("invalid_json_or_not_object")
+            else:
+                try:
+                    errors.extend(validator(parsed))
+                except Exception as exc:
+                    errors.append(f"validator_exception: {exc}")
+                validation_ok = len(errors) == 0
+
+        return {
+            "attempt": int(cycle),
+            "phase": str(phase),
+            "llm_mode": self._resolve_llm_mode(mode, tool_name),
+            "request_mode": mode,
+            "tool_name": tool_name,
+            "schema_hint": corrective_schema_hint,
+            "raw_output": raw,
+            "parse_ok": bool(parse_ok),
+            "validation_ok": bool(validation_ok),
+            "errors": list(errors),
+            "api_error": api_error,
+            "parsed_object": parsed,
+        }
+
+    def call_llm_json(
+        self,
+        prompt,
+        schema_name,
+        validator,
+        corrective_schema_hint,
+        mode="json",
+        tool_name=None,
+    ):
         attempts = []
         current_prompt = prompt
+        repair_used = False
+        llm_mode = self._resolve_llm_mode(mode, tool_name)
 
-        for attempt in range(1, self.max_json_retries + 1):
-            raw = None
-            parsed = None
-            errors = []
-            api_error = None
-            try:
-                raw = self.interface_llm.get_response(current_prompt)
-            except Exception as exc:
-                api_error = f"api_error: {exc}"
-                errors.append(api_error)
-
-            if api_error is None:
-                parsed = _try_parse_json_object(raw)
-                if parsed is None:
-                    errors.append("invalid_json_or_not_object")
-                else:
-                    errors.extend(validator(parsed))
-
-            attempts.append(
-                {
-                    "attempt": attempt,
-                    "raw_output": raw,
-                    "errors": list(errors),
-                    "parsed_ok": parsed is not None,
-                    "api_error": api_error,
-                }
+        for cycle in range(1, self.max_json_retries + 1):
+            primary = self._attempt_llm_json(
+                current_prompt,
+                validator,
+                mode,
+                tool_name,
+                corrective_schema_hint,
+                phase="primary",
+                cycle=cycle,
             )
-
-            if len(errors) == 0 and parsed is not None:
-                return parsed, {
+            attempts.append({k: v for k, v in primary.items() if k != "parsed_object"})
+            if primary["parse_ok"] and primary["validation_ok"] and primary["parsed_object"] is not None:
+                return primary["parsed_object"], {
                     "success": True,
+                    "llm_success": True,
                     "schema": schema_name,
+                    "llm_mode": llm_mode,
                     "attempts": attempts,
-                    "retries_used": attempt - 1,
+                    "retries_used": max(0, len(attempts) - 1),
+                    "repair_used": repair_used,
+                    "parse_ok": True,
+                    "validation_ok": True,
+                    "failure_reason": "",
                     "last_errors": [],
                 }
 
-            if attempt < self.max_json_retries:
-                error_text = "\n".join(f"- {e}" for e in errors[:8])
-                current_prompt = (
-                    prompt
-                    + "\n\nYour previous output was invalid JSON / missing keys / probabilities not summing to 1.\n"
-                    + "Output ONLY valid JSON matching the schema.\n"
-                    + f"Schema reminder: {corrective_schema_hint}\n"
-                    + "Validation errors:\n"
-                    + error_text
-                )
+            repair_used = True
+            repair_prompt = self._build_repair_prompt(
+                schema_name=schema_name,
+                corrective_schema_hint=corrective_schema_hint,
+                raw_output=primary.get("raw_output"),
+                errors=primary.get("errors"),
+            )
+            repair = self._attempt_llm_json(
+                repair_prompt,
+                validator,
+                mode,
+                tool_name,
+                corrective_schema_hint,
+                phase="repair",
+                cycle=cycle,
+            )
+            attempts.append({k: v for k, v in repair.items() if k != "parsed_object"})
+            if repair["parse_ok"] and repair["validation_ok"] and repair["parsed_object"] is not None:
+                return repair["parsed_object"], {
+                    "success": True,
+                    "llm_success": True,
+                    "schema": schema_name,
+                    "llm_mode": llm_mode,
+                    "attempts": attempts,
+                    "retries_used": max(0, len(attempts) - 1),
+                    "repair_used": True,
+                    "parse_ok": True,
+                    "validation_ok": True,
+                    "failure_reason": "",
+                    "last_errors": [],
+                }
 
+            current_prompt = self._build_retry_prompt(
+                prompt=prompt,
+                corrective_schema_hint=corrective_schema_hint,
+                errors=repair.get("errors") or primary.get("errors"),
+            )
+
+        last_errors = attempts[-1]["errors"] if attempts else ["no_attempts"]
+        failure_reason = str(last_errors[0]) if len(last_errors) > 0 else "unknown_failure"
         return None, {
             "success": False,
+            "llm_success": False,
             "schema": schema_name,
+            "llm_mode": llm_mode,
             "attempts": attempts,
             "retries_used": max(0, len(attempts) - 1),
-            "last_errors": attempts[-1]["errors"] if attempts else ["no_attempts"],
+            "repair_used": repair_used,
+            "parse_ok": bool(attempts[-1]["parse_ok"]) if attempts else False,
+            "validation_ok": bool(attempts[-1]["validation_ok"]) if attempts else False,
+            "failure_reason": failure_reason,
+            "last_errors": last_errors,
         }
 
     def _fallback_diagnosis(self, observation):
@@ -822,6 +928,8 @@ class AgenticController:
             schema_name="diagnosis",
             validator=lambda obj: self._validate_diagnosis_output(obj, observation),
             corrective_schema_hint='{"summary":str,"factors":{...},"diagnosis_labels":[...],"evidence":[...]}',
+            mode="json",
+            tool_name="diagnose_state",
         )
         diagnosis, diagnosis_sanitize_meta = self._sanitize_diagnosis(diagnosis_raw, observation)
         diagnosis_flags = self._classify_stage(diagnosis_llm_meta, diagnosis_sanitize_meta)
@@ -836,6 +944,8 @@ class AgenticController:
             schema_name="planner",
             validator=lambda obj: self._validate_planner_output(obj, diagnosis, observation),
             corrective_schema_hint='{"diagnosis_used":str,"op_probs":{"e1":..},"parent_mix":{"elite":..},"prompt_modifiers":[..],"evaluation_plan":{"instances":..},"rationale":[..]}',
+            mode="json",
+            tool_name="plan_action",
         )
         planner_output, planner_sanitize_meta = self._sanitize_plan(planner_raw, diagnosis, observation)
         planner_flags = self._classify_stage(planner_llm_meta, planner_sanitize_meta)
@@ -851,6 +961,8 @@ class AgenticController:
             schema_name="critic",
             validator=lambda obj: self._validate_critic_output(obj, planner_output, diagnosis, observation),
             corrective_schema_hint='{"verdict":"approve|revise","reasons":[...],"final_plan":{"op_probs":{...},"parent_mix":{...}}}',
+            mode="json",
+            tool_name="critic_plan",
         )
         if not isinstance(critic_raw, dict):
             critic_raw = {"verdict": "revise", "reasons": ["critic_fallback_non_dict"], "final_plan": planner_output}
