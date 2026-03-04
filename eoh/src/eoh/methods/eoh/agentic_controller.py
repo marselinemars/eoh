@@ -28,23 +28,13 @@ Your job is to control the PROPOSAL distribution:
 
 Available operators (you MUST choose only among these):
 - e1: Global Novelty - generate a totally different algorithm (high exploration, risky)
-- e2: Backbone Variant - extract common backbone from good heuristics and propose a motivated variant (structured exploration, often productive)
-- m1: Structural Modification - moderate structural edit of one heuristic (medium exploration, can increase invalid risk)
-- m2: Parameter Tuning - adjust parameters in one heuristic (local exploitation, relatively safe)
-- m3: Simplification/Generalization - simplify to reduce overfitting and improve robustness (safe when complexity grows)
+- e2: Backbone Variant - structured exploration around good ideas
+- m1: Structural Modification - moderate structural edits
+- m2: Parameter Tuning - local exploitation and refinement
+- m3: Simplification/Generalization - simplify to reduce overfitting
 
 Goal of the controller:
 Maximize search efficiency and final best fitness by adapting operator usage over time.
-
-INPUT JSON: ObservationPacket
-
-You will receive a JSON object called ObservationPacket containing telemetry and summaries.
-If some fields are missing, be robust and infer from available information.
-"""
-
-
-OBSERVATION_PACKET_DEF = """ObservationPacket:
-{OBSERVATION_PACKET_JSON}
 """
 
 
@@ -54,19 +44,17 @@ ROLE: Agent 1 - DIAGNOSER
 
 Task:
 Read ObservationPacket and infer the current search state.
-Output continuous diagnosis factors in [0,1] and short evidence-based labels.
+Output continuous diagnosis factors in [0,1] and evidence-grounded labels.
 
-Interpretation guide:
-- exploration_need up when stagnation_len is high, improve_rate_k is low, or diversity_score is low.
-- exploitation_need up when improve_rate_k is high and improvements are consistent.
-- diversity_need up when diversity_score is low or population seems collapsed.
-- invalid_risk up when invalid_rate_k is high or risky operators have high invalid_rate.
-- overfit_risk up when complexity of top heuristics is rising and improvements are unstable or diminishing.
-
-You MUST:
-- Ground your diagnosis in telemetry.
-- Keep it concise and falsifiable.
-- Do NOT propose operators or actions.
+Hard constraints:
+1) You MUST explicitly reference these telemetry fields in evidence:
+   - stagnation_len
+   - diversity_score
+   - invalid_rate_k
+2) You MUST identify the top operator by recent mean_delta from op_stats_k and cite it.
+3) diagnosis_labels must contain at least 2 labels.
+4) evidence must contain at least 2 bullets.
+5) Do NOT propose actions/operators.
 
 OUTPUT FORMAT (MANDATORY):
 Return ONLY valid JSON with EXACT keys below (no markdown, no extra keys):
@@ -84,10 +72,6 @@ Return ONLY valid JSON with EXACT keys below (no markdown, no extra keys):
   "evidence": [string, ...]
 }}
 
-Rules:
-- All factor values must be in [0,1].
-- confidence should be lower with low/contradictory evidence.
-
 ObservationPacket:
 {OBS_JSON}
 """
@@ -98,22 +82,17 @@ PLANNER_PROMPT_TEMPLATE = """{PROJECT_CONTEXT}
 ROLE: Agent 2 - PLANNER
 
 Task:
-Given the diagnosis and observation packet, produce a plan for the NEXT generation.
+Given DiagnosisOutput and ObservationPacket, produce a plan for NEXT generation.
 
-Your plan must define:
-- operator probabilities (mixture over e1,e2,m1,m2,m3)
-- parent selection mix (elite/diverse/random)
-- prompt modifiers (short constraints appended to existing EOH generator prompts)
-- evaluation plan (keep instances fixed unless strongly justified)
-
-Decision principles:
-1) Prefer operators with better recent mean_delta and success_rate.
-2) Penalize operators with high invalid_rate.
-3) If exploration_need high, emphasize e2 and m1.
-4) Use e1 rarely.
-5) If exploitation_need high, emphasize m2 and some m3.
-6) If invalid_risk high, suppress e1 and reduce m1.
-7) e2 is often productive; do not starve it.
+Hard constraints:
+1) op_probs and parent_mix must each sum to exactly 1.0.
+2) Uniform op_probs are banned. (max(op_probs)-min(op_probs) must be >= 0.15)
+3) Compute operator preference from op_stats_k:
+   - Set the largest op probability to the operator with highest recent mean_delta
+     unless that operator has high invalid_rate (> 0.40).
+4) rationale must include at least 2 citations to specific telemetry fields
+   (e.g., stagnation_len, invalid_rate_k, diversity_score, op_stats_k.e2.mean_delta).
+5) Keep prompt_modifiers short and safe (1-4).
 
 OUTPUT FORMAT (MANDATORY):
 Return ONLY valid JSON with EXACT keys below (no markdown, no extra keys):
@@ -125,15 +104,6 @@ Return ONLY valid JSON with EXACT keys below (no markdown, no extra keys):
   "evaluation_plan": {{"instances": number, "holdout_instances": number}},
   "rationale": [string, ...]
 }}
-
-Hard rules:
-- op_probs must sum to 1.0
-- parent_mix must sum to 1.0
-- All probabilities must be in [0,1]
-- If invalid_risk >= 0.7, set e1 = 0 and keep m1 small.
-- prompt_modifiers should be short and safe (1-4 items).
-- instances must equal ObservationPacket.budget.instances unless justified.
-- holdout_instances <= ObservationPacket.budget.holdout_instances.
 
 Inputs:
 DiagnosisOutput:
@@ -149,25 +119,18 @@ CRITIC_PROMPT_TEMPLATE = """{PROJECT_CONTEXT}
 ROLE: Agent 3 - CRITIC / SAFETY
 
 Task:
-Validate the PlannerOutput and revise it if it violates guardrails or is inconsistent with telemetry.
-Return a final plan.
+Validate PlannerOutput and revise with guardrails.
 
-GUARDRAILS (MUST ENFORCE):
-1) e1 cap: e1 <= 0.05 always.
-2) e1 cooldown: if "e1" appears in last_used_ops within last 3 generations, force e1 = 0.
-3) e2 floor: e2 >= 0.25 unless op_stats_k.e2.invalid_rate > 0.40.
-4) Invalid spike rule:
-   - if invalid_rate_k >= 0.30 or Diagnosis.invalid_risk >= 0.70:
-     set e1 = 0
-     reduce m1
-     increase m2 and/or m3
+Guardrails (must enforce):
+1) e1 <= 0.05.
+2) If "e1" in last 3 last_used_ops, set e1=0.
+3) e2 >= 0.25 unless op_stats_k.e2.invalid_rate > 0.40.
+4) If invalid_rate_k >= 0.30 or Diagnosis.invalid_risk >= 0.70:
+   - set e1=0
+   - reduce m1
+   - increase m2 and/or m3
 5) Normalize op_probs and parent_mix.
-6) Keep within budget.
-
-QUALITY CHECKS:
-- Shift weight away from weak operators to stronger ones (usually e2).
-- If diversity_score > 0.7, avoid e1.
-- If stagnation is high, prefer e2 before aggressive e1.
+6) Keep evaluation_plan inside budget.
 
 OUTPUT FORMAT (MANDATORY):
 Return ONLY valid JSON with EXACT keys below (no markdown, no extra keys):
@@ -206,10 +169,21 @@ def _clip01(value):
     return v
 
 
+def _to_float(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sum_close_to_one(values, tol=1e-3):
+    return abs(sum(values) - 1.0) <= tol
+
+
 def _normalize_prob_dict(values, keys):
     cleaned = {}
     for key in keys:
-        cleaned[key] = max(0.0, float(values.get(key, 0.0)))
+        cleaned[key] = max(0.0, _to_float(values.get(key), 0.0))
     total = sum(cleaned.values())
     if total <= 1e-12:
         uniform = 1.0 / float(len(keys))
@@ -245,7 +219,7 @@ def _json_candidate_blocks(text):
             if depth > 0:
                 depth -= 1
                 if depth == 0 and start is not None:
-                    blocks.append(text[start:i + 1])
+                    blocks.append(text[start : i + 1])
                     start = None
     return blocks
 
@@ -255,16 +229,16 @@ def _try_parse_json_object(text):
         return text
     if not isinstance(text, str):
         return None
-    text = text.strip()
-    if not text:
+    stripped = text.strip()
+    if not stripped:
         return None
     try:
-        obj = json.loads(text)
+        obj = json.loads(stripped)
         if isinstance(obj, dict):
             return obj
     except Exception:
         pass
-    for block in _json_candidate_blocks(text):
+    for block in _json_candidate_blocks(stripped):
         try:
             obj = json.loads(block)
             if isinstance(obj, dict):
@@ -293,25 +267,285 @@ class AgenticController:
             llm_local_url,
             self.debug_mode,
         )
-        self.max_json_retries = int(os.getenv("EOH_CONTROLLER_JSON_RETRIES", "2"))
+        self.max_json_retries = max(1, int(os.getenv("EOH_CONTROLLER_JSON_RETRIES", "3")))
 
-    def _query_json(self, prompt):
-        last_raw = None
-        for _ in range(max(1, self.max_json_retries)):
-            raw = self.interface_llm.get_response(prompt)
-            last_raw = raw
-            parsed = _try_parse_json_object(raw)
-            if parsed is not None:
-                return parsed, raw
-        return None, last_raw
+    def _now(self):
+        return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    def _build_prompt(self, template, **kwargs):
+        return template.format(PROJECT_CONTEXT=PROJECT_CONTEXT_BLOCK, **kwargs)
+
+    def _top_operator_by_mean_delta(self, observation):
+        op_stats = observation.get("op_stats_k", {}) if isinstance(observation.get("op_stats_k"), dict) else {}
+        best_op = None
+        best_delta = None
+        for op in ["e1", "e2", "m1", "m2", "m3"]:
+            s = op_stats.get(op, {}) if isinstance(op_stats.get(op), dict) else {}
+            d = _to_float(s.get("mean_delta"), None)
+            if d is None:
+                continue
+            if best_delta is None or d > best_delta:
+                best_delta = d
+                best_op = op
+        return best_op
+
+    def _best_valid_operator_by_delta(self, observation):
+        op_stats = observation.get("op_stats_k", {}) if isinstance(observation.get("op_stats_k"), dict) else {}
+        best_op = None
+        best_delta = None
+        for op in ["e1", "e2", "m1", "m2", "m3"]:
+            s = op_stats.get(op, {}) if isinstance(op_stats.get(op), dict) else {}
+            inv = _to_float(s.get("invalid_rate"), None)
+            d = _to_float(s.get("mean_delta"), None)
+            if d is None:
+                continue
+            if inv is not None and inv > 0.40:
+                continue
+            if best_delta is None or d > best_delta:
+                best_delta = d
+                best_op = op
+        return best_op
+
+    def _validate_diagnosis_output(self, obj, observation):
+        errors = []
+        if not isinstance(obj, dict):
+            return ["output is not a JSON object"]
+        required = ["summary", "factors", "diagnosis_labels", "evidence"]
+        for key in required:
+            if key not in obj:
+                errors.append(f"missing key: {key}")
+
+        factors = obj.get("factors")
+        if not isinstance(factors, dict):
+            errors.append("factors must be object")
+        else:
+            for key in [
+                "exploration_need",
+                "exploitation_need",
+                "diversity_need",
+                "invalid_risk",
+                "overfit_risk",
+                "confidence",
+            ]:
+                if key not in factors:
+                    errors.append(f"factors missing: {key}")
+                else:
+                    v = _to_float(factors.get(key), None)
+                    if v is None:
+                        errors.append(f"factor {key} not numeric")
+                    elif v < 0.0 or v > 1.0:
+                        errors.append(f"factor {key} out of [0,1]")
+
+        labels = obj.get("diagnosis_labels")
+        if not isinstance(labels, list):
+            errors.append("diagnosis_labels must be list")
+        elif len(labels) < 2:
+            errors.append("diagnosis_labels must contain at least 2 items")
+
+        evidence = obj.get("evidence")
+        if not isinstance(evidence, list):
+            errors.append("evidence must be list")
+        elif len(evidence) < 2:
+            errors.append("evidence must contain at least 2 items")
+
+        text = (str(obj.get("summary", "")) + " " + " ".join(str(x) for x in (evidence if isinstance(evidence, list) else []))).lower()
+        for field_name in ["stagnation_len", "diversity_score", "invalid_rate_k"]:
+            if field_name.lower() not in text:
+                errors.append(f"missing telemetry reference: {field_name}")
+
+        top_op = self._top_operator_by_mean_delta(observation)
+        if top_op is not None:
+            if top_op.lower() not in text and f"op_stats_k.{top_op}.mean_delta".lower() not in text:
+                errors.append(f"missing top mean_delta operator reference: {top_op}")
+        return errors
+
+    def _validate_planner_output(self, obj, diagnosis, observation):
+        errors = []
+        if not isinstance(obj, dict):
+            return ["output is not a JSON object"]
+        required = ["diagnosis_used", "op_probs", "parent_mix", "prompt_modifiers", "evaluation_plan", "rationale"]
+        for key in required:
+            if key not in obj:
+                errors.append(f"missing key: {key}")
+
+        op_probs = obj.get("op_probs")
+        if not isinstance(op_probs, dict):
+            errors.append("op_probs must be object")
+        else:
+            vals = []
+            for op in ["e1", "e2", "m1", "m2", "m3"]:
+                v = _to_float(op_probs.get(op), None)
+                if v is None:
+                    errors.append(f"op_probs missing/invalid: {op}")
+                    vals.append(0.0)
+                else:
+                    if v < 0.0 or v > 1.0:
+                        errors.append(f"op_probs[{op}] out of [0,1]")
+                    vals.append(v)
+            if not _sum_close_to_one(vals):
+                errors.append("op_probs must sum to 1")
+            if max(vals) - min(vals) < 0.15:
+                errors.append("op_probs must be non-uniform (spread >= 0.15)")
+
+            preferred = self._best_valid_operator_by_delta(observation)
+            if preferred is not None:
+                argmax_op = max(["e1", "e2", "m1", "m2", "m3"], key=lambda k: _to_float(op_probs.get(k), 0.0))
+                if argmax_op != preferred:
+                    errors.append(
+                        f"largest op prob must target highest mean_delta valid operator ({preferred}), got {argmax_op}"
+                    )
+
+        parent_mix = obj.get("parent_mix")
+        if not isinstance(parent_mix, dict):
+            errors.append("parent_mix must be object")
+        else:
+            vals = []
+            for key in ["elite", "diverse", "random"]:
+                v = _to_float(parent_mix.get(key), None)
+                if v is None:
+                    errors.append(f"parent_mix missing/invalid: {key}")
+                    vals.append(0.0)
+                else:
+                    if v < 0.0 or v > 1.0:
+                        errors.append(f"parent_mix[{key}] out of [0,1]")
+                    vals.append(v)
+            if not _sum_close_to_one(vals):
+                errors.append("parent_mix must sum to 1")
+
+        prompt_modifiers = obj.get("prompt_modifiers")
+        if not isinstance(prompt_modifiers, list) or len(prompt_modifiers) == 0:
+            errors.append("prompt_modifiers must be non-empty list")
+        elif len(prompt_modifiers) > 4:
+            errors.append("prompt_modifiers max length is 4")
+
+        evaluation_plan = obj.get("evaluation_plan")
+        if not isinstance(evaluation_plan, dict):
+            errors.append("evaluation_plan must be object")
+        else:
+            budget = observation.get("budget", {}) if isinstance(observation.get("budget"), dict) else {}
+            budget_instances = int(budget.get("instances", 0) or 0)
+            budget_holdout = int(budget.get("holdout_instances", 0) or 0)
+            inst = evaluation_plan.get("instances")
+            hold = evaluation_plan.get("holdout_instances")
+            if _to_float(inst, None) is None:
+                errors.append("evaluation_plan.instances must be numeric")
+            if _to_float(hold, None) is None:
+                errors.append("evaluation_plan.holdout_instances must be numeric")
+            if _to_float(inst, 0) > budget_instances > 0:
+                errors.append("evaluation_plan.instances exceeds budget.instances")
+            if _to_float(hold, 0) > budget_holdout >= 0:
+                errors.append("evaluation_plan.holdout_instances exceeds budget.holdout_instances")
+
+        rationale = obj.get("rationale")
+        if not isinstance(rationale, list) or len(rationale) < 2:
+            errors.append("rationale must have at least 2 lines")
+        else:
+            text = " ".join(str(x) for x in rationale).lower()
+            citation_tokens = [
+                "stagnation_len",
+                "invalid_rate_k",
+                "diversity_score",
+                "improve_rate_k",
+                "delta_best",
+                "op_stats_k.e1.mean_delta",
+                "op_stats_k.e2.mean_delta",
+                "op_stats_k.m1.mean_delta",
+                "op_stats_k.m2.mean_delta",
+                "op_stats_k.m3.mean_delta",
+            ]
+            cited = sum(1 for token in citation_tokens if token in text)
+            if cited < 2:
+                errors.append("rationale must cite at least 2 telemetry fields")
+
+        invalid_risk = _to_float((diagnosis.get("factors", {}) if isinstance(diagnosis, dict) else {}).get("invalid_risk"), None)
+        if invalid_risk is not None and invalid_risk >= 0.70 and isinstance(op_probs, dict):
+            e1 = _to_float(op_probs.get("e1"), 0.0)
+            m1 = _to_float(op_probs.get("m1"), 1.0)
+            if e1 > 1e-6:
+                errors.append("invalid_risk>=0.7 requires e1=0")
+            if m1 > 0.15:
+                errors.append("invalid_risk>=0.7 requires small m1")
+        return errors
+
+    def _validate_critic_output(self, obj, _planner_output, _diagnosis, _observation):
+        errors = []
+        if not isinstance(obj, dict):
+            return ["output is not a JSON object"]
+        if obj.get("verdict") not in ["approve", "revise"]:
+            errors.append("verdict must be approve|revise")
+        final_plan = obj.get("final_plan")
+        if not isinstance(final_plan, dict):
+            errors.append("final_plan must be object")
+        return errors
+
+    def call_llm_json(self, prompt, schema_name, validator, corrective_schema_hint):
+        attempts = []
+        current_prompt = prompt
+
+        for attempt in range(1, self.max_json_retries + 1):
+            raw = None
+            parsed = None
+            errors = []
+            api_error = None
+            try:
+                raw = self.interface_llm.get_response(current_prompt)
+            except Exception as exc:
+                api_error = f"api_error: {exc}"
+                errors.append(api_error)
+
+            if api_error is None:
+                parsed = _try_parse_json_object(raw)
+                if parsed is None:
+                    errors.append("invalid_json_or_not_object")
+                else:
+                    errors.extend(validator(parsed))
+
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "raw_output": raw,
+                    "errors": list(errors),
+                    "parsed_ok": parsed is not None,
+                    "api_error": api_error,
+                }
+            )
+
+            if len(errors) == 0 and parsed is not None:
+                return parsed, {
+                    "success": True,
+                    "schema": schema_name,
+                    "attempts": attempts,
+                    "retries_used": attempt - 1,
+                    "last_errors": [],
+                }
+
+            if attempt < self.max_json_retries:
+                error_text = "\n".join(f"- {e}" for e in errors[:8])
+                current_prompt = (
+                    prompt
+                    + "\n\nYour previous output was invalid JSON / missing keys / probabilities not summing to 1.\n"
+                    + "Output ONLY valid JSON matching the schema.\n"
+                    + f"Schema reminder: {corrective_schema_hint}\n"
+                    + "Validation errors:\n"
+                    + error_text
+                )
+
+        return None, {
+            "success": False,
+            "schema": schema_name,
+            "attempts": attempts,
+            "retries_used": max(0, len(attempts) - 1),
+            "last_errors": attempts[-1]["errors"] if attempts else ["no_attempts"],
+        }
 
     def _fallback_diagnosis(self, observation):
-        improve_rate = float(observation.get("improve_rate_k", 0.0) or 0.0)
+        improve_rate = _to_float(observation.get("improve_rate_k"), 0.0) or 0.0
         stagnation = int(observation.get("stagnation_len", 0) or 0)
-        invalid_rate = float(observation.get("invalid_rate_k", 0.0) or 0.0)
-        diversity = float(observation.get("diversity_score", 0.5) or 0.5)
+        invalid_rate = _to_float(observation.get("invalid_rate_k"), 0.0) or 0.0
+        diversity = _to_float(observation.get("diversity_score"), 0.5) or 0.5
         top = observation.get("top_heuristics", []) or []
-        complexity = [float(h.get("complexity", 0.0) or 0.0) for h in top if isinstance(h, dict)]
+        complexity = [_to_float(h.get("complexity"), 0.0) for h in top if isinstance(h, dict)]
+        complexity = [x for x in complexity if x is not None]
         avg_complexity = (sum(complexity) / float(len(complexity))) if complexity else 0.0
 
         exploration_need = _clip01(0.55 * min(1.0, stagnation / 5.0) + 0.45 * (1.0 - improve_rate))
@@ -319,16 +553,7 @@ class AgenticController:
         diversity_need = _clip01(max(0.0, 0.7 - diversity))
         invalid_risk = _clip01(invalid_rate)
         overfit_risk = _clip01(0.4 * min(1.0, avg_complexity) + 0.6 * min(1.0, stagnation / 6.0))
-        confidence = _clip01(0.6)
-        labels = []
-        if exploration_need >= 0.65:
-            labels.append("NEED_EXPLORATION")
-        if invalid_risk >= 0.7:
-            labels.append("INVALID_SPIKE")
-        if overfit_risk >= 0.6:
-            labels.append("OVERFIT_RISK")
-        if len(labels) == 0:
-            labels = ["BALANCED_SEARCH"]
+        top_op = self._top_operator_by_mean_delta(observation) or "e2"
         return {
             "summary": "Fallback diagnosis based on telemetry heuristics.",
             "factors": {
@@ -337,134 +562,188 @@ class AgenticController:
                 "diversity_need": diversity_need,
                 "invalid_risk": invalid_risk,
                 "overfit_risk": overfit_risk,
-                "confidence": confidence,
+                "confidence": 0.55,
             },
-            "diagnosis_labels": labels,
+            "diagnosis_labels": ["TELEMETRY_FALLBACK", "NEED_EXPLORATION" if exploration_need >= 0.5 else "NEED_EXPLOITATION"],
             "evidence": [
                 f"stagnation_len={stagnation}",
-                f"improve_rate_k={improve_rate}",
-                f"invalid_rate_k={invalid_rate}",
                 f"diversity_score={diversity}",
+                f"invalid_rate_k={invalid_rate}",
+                f"top_op_by_mean_delta={top_op}",
             ],
         }
 
-    def _sanitize_diagnosis(self, diagnosis, observation):
-        if not isinstance(diagnosis, dict):
-            diagnosis = self._fallback_diagnosis(observation)
-        factors = diagnosis.get("factors", {}) if isinstance(diagnosis.get("factors"), dict) else {}
-        diagnosis["factors"] = {
-            "exploration_need": _clip01(factors.get("exploration_need", 0.5)),
-            "exploitation_need": _clip01(factors.get("exploitation_need", 0.5)),
-            "diversity_need": _clip01(factors.get("diversity_need", 0.5)),
-            "invalid_risk": _clip01(factors.get("invalid_risk", 0.5)),
-            "overfit_risk": _clip01(factors.get("overfit_risk", 0.3)),
-            "confidence": _clip01(factors.get("confidence", 0.5)),
-        }
-        diagnosis["summary"] = str(diagnosis.get("summary", "Diagnosis generated from telemetry."))
-        labels = diagnosis.get("diagnosis_labels", [])
-        diagnosis["diagnosis_labels"] = [str(x) for x in labels][:5] if isinstance(labels, list) else []
-        evidence = diagnosis.get("evidence", [])
-        diagnosis["evidence"] = [str(x) for x in evidence][:8] if isinstance(evidence, list) else []
-        return diagnosis
-
     def _fallback_plan(self, diagnosis, observation):
-        factors = diagnosis.get("factors", {})
-        exploration_need = float(factors.get("exploration_need", 0.5))
-        exploitation_need = float(factors.get("exploitation_need", 0.5))
-        invalid_risk = float(factors.get("invalid_risk", 0.5))
-        diversity_need = float(factors.get("diversity_need", 0.5))
-        stagnation = int(observation.get("stagnation_len", 0) or 0)
+        factors = diagnosis.get("factors", {}) if isinstance(diagnosis, dict) else {}
+        exploration_need = _to_float(factors.get("exploration_need"), 0.5) or 0.5
+        exploitation_need = _to_float(factors.get("exploitation_need"), 0.5) or 0.5
+        invalid_risk = _to_float(factors.get("invalid_risk"), 0.5) or 0.5
+        diversity_need = _to_float(factors.get("diversity_need"), 0.5) or 0.5
         budget = observation.get("budget", {}) if isinstance(observation.get("budget"), dict) else {}
 
         op_probs = {
-            "e1": 0.01 if (diversity_need > 0.7 and invalid_risk < 0.7 and stagnation >= 4) else 0.0,
+            "e1": 0.0 if invalid_risk >= 0.70 else (0.01 if diversity_need > 0.70 else 0.0),
             "e2": 0.45 + 0.25 * exploration_need,
-            "m1": 0.1 + 0.15 * exploration_need,
-            "m2": 0.2 + 0.25 * exploitation_need,
-            "m3": 0.1 + 0.15 * invalid_risk,
+            "m1": 0.10 + 0.15 * exploration_need,
+            "m2": 0.20 + 0.25 * exploitation_need,
+            "m3": 0.10 + 0.15 * invalid_risk,
         }
-        if invalid_risk >= 0.7:
-            op_probs["e1"] = 0.0
+        if invalid_risk >= 0.70:
             op_probs["m1"] = min(op_probs["m1"], 0.08)
             op_probs["m2"] += 0.08
             op_probs["m3"] += 0.08
 
-        parent_mix = {
-            "elite": 0.5 + 0.2 * exploitation_need,
-            "diverse": 0.25 + 0.2 * exploration_need,
-            "random": 0.25 + 0.1 * diversity_need,
-        }
-        modifiers = [
-            "Keep scoring function simple; avoid deep nesting.",
-            "Avoid adding many new constants.",
-        ]
-        if invalid_risk >= 0.7:
-            modifiers = [
-                "Prioritize validity and numerical stability.",
-                "Prefer smooth penalties over hard thresholds.",
-            ]
-        plan = {
+        return {
             "diagnosis_used": diagnosis.get("summary", "fallback"),
             "op_probs": op_probs,
-            "parent_mix": parent_mix,
-            "prompt_modifiers": modifiers,
+            "parent_mix": {
+                "elite": 0.50 + 0.20 * exploitation_need,
+                "diverse": 0.25 + 0.20 * exploration_need,
+                "random": 0.25 + 0.10 * diversity_need,
+            },
+            "prompt_modifiers": [
+                "Keep scoring function simple; avoid deep nesting.",
+                "Avoid adding many new constants.",
+            ],
             "evaluation_plan": {
                 "instances": int(budget.get("instances", 0) or 0),
                 "holdout_instances": int(budget.get("holdout_instances", 0) or 0),
             },
-            "rationale": ["Fallback planner policy from diagnosis factors."],
+            "rationale": [
+                "Fallback planner policy from diagnosis factors.",
+                "Uses stagnation_len and invalid_rate_k to bias e2/m2/m3.",
+            ],
         }
-        return plan
+
+    def _sanitize_diagnosis(self, diagnosis, observation):
+        patches = []
+        fallback_used = False
+        source_obj = diagnosis
+        if not isinstance(source_obj, dict):
+            source_obj = self._fallback_diagnosis(observation)
+            fallback_used = True
+            patches.append("fallback_applied_non_dict")
+
+        factors = source_obj.get("factors", {}) if isinstance(source_obj.get("factors"), dict) else {}
+        if not isinstance(source_obj.get("factors"), dict):
+            patches.append("missing_factors_object")
+        out = {
+            "summary": str(source_obj.get("summary", "Diagnosis generated from telemetry.")),
+            "factors": {
+                "exploration_need": _clip01(factors.get("exploration_need", 0.5)),
+                "exploitation_need": _clip01(factors.get("exploitation_need", 0.5)),
+                "diversity_need": _clip01(factors.get("diversity_need", 0.5)),
+                "invalid_risk": _clip01(factors.get("invalid_risk", 0.5)),
+                "overfit_risk": _clip01(factors.get("overfit_risk", 0.3)),
+                "confidence": _clip01(factors.get("confidence", 0.5)),
+            },
+            "diagnosis_labels": [str(x) for x in source_obj.get("diagnosis_labels", [])][:6]
+            if isinstance(source_obj.get("diagnosis_labels"), list)
+            else [],
+            "evidence": [str(x) for x in source_obj.get("evidence", [])][:10]
+            if isinstance(source_obj.get("evidence"), list)
+            else [],
+        }
+        if len(out["diagnosis_labels"]) < 2:
+            fallback = self._fallback_diagnosis(observation)
+            out["diagnosis_labels"] = fallback["diagnosis_labels"]
+            patches.append("diagnosis_labels_too_short")
+        if len(out["evidence"]) < 2:
+            fallback = self._fallback_diagnosis(observation)
+            out["evidence"] = fallback["evidence"]
+            patches.append("evidence_too_short")
+        return out, {"fallback_used": fallback_used, "patched": len(patches) > 0, "patches": patches}
 
     def _sanitize_plan(self, plan, diagnosis, observation):
-        if not isinstance(plan, dict):
-            plan = self._fallback_plan(diagnosis, observation)
+        patches = []
+        fallback_used = False
+        source_obj = plan
+        if not isinstance(source_obj, dict):
+            source_obj = self._fallback_plan(diagnosis, observation)
+            fallback_used = True
+            patches.append("fallback_applied_non_dict")
+
         budget = observation.get("budget", {}) if isinstance(observation.get("budget"), dict) else {}
         budget_instances = int(budget.get("instances", 0) or 0)
         budget_holdout = int(budget.get("holdout_instances", 0) or 0)
 
-        op_probs = plan.get("op_probs", {}) if isinstance(plan.get("op_probs"), dict) else {}
-        parent_mix = plan.get("parent_mix", {}) if isinstance(plan.get("parent_mix"), dict) else {}
-        plan["op_probs"] = _normalize_prob_dict(op_probs, ["e1", "e2", "m1", "m2", "m3"])
-        plan["parent_mix"] = _normalize_prob_dict(parent_mix, ["elite", "diverse", "random"])
+        op_probs = source_obj.get("op_probs", {}) if isinstance(source_obj.get("op_probs"), dict) else {}
+        parent_mix = source_obj.get("parent_mix", {}) if isinstance(source_obj.get("parent_mix"), dict) else {}
+        if not isinstance(source_obj.get("op_probs"), dict):
+            patches.append("missing_op_probs_object")
+        if not isinstance(source_obj.get("parent_mix"), dict):
+            patches.append("missing_parent_mix_object")
 
-        modifiers = plan.get("prompt_modifiers", [])
-        if not isinstance(modifiers, list):
-            modifiers = []
-        plan["prompt_modifiers"] = [str(x).strip() for x in modifiers if str(x).strip()][:4]
+        op_probs_out = _normalize_prob_dict(op_probs, ["e1", "e2", "m1", "m2", "m3"])
+        parent_mix_out = _normalize_prob_dict(parent_mix, ["elite", "diverse", "random"])
 
-        evaluation_plan = plan.get("evaluation_plan", {}) if isinstance(plan.get("evaluation_plan"), dict) else {}
-        instances = int(evaluation_plan.get("instances", budget_instances) or budget_instances)
-        holdout_instances = int(evaluation_plan.get("holdout_instances", budget_holdout) or 0)
+        vals = [op_probs_out[k] for k in ["e1", "e2", "m1", "m2", "m3"]]
+        if (max(vals) - min(vals)) < 0.15:
+            fallback = self._fallback_plan(diagnosis, observation)
+            op_probs_out = _normalize_prob_dict(fallback["op_probs"], ["e1", "e2", "m1", "m2", "m3"])
+            patches.append("uniform_op_probs_replaced")
+
+        prompt_modifiers = source_obj.get("prompt_modifiers", [])
+        if not isinstance(prompt_modifiers, list):
+            prompt_modifiers = []
+            patches.append("prompt_modifiers_not_list")
+        prompt_modifiers = [str(x).strip() for x in prompt_modifiers if str(x).strip()][:4]
+        if len(prompt_modifiers) == 0:
+            prompt_modifiers = ["Keep scoring function simple; avoid deep nesting."]
+            patches.append("prompt_modifiers_empty_defaulted")
+
+        eval_plan = source_obj.get("evaluation_plan", {}) if isinstance(source_obj.get("evaluation_plan"), dict) else {}
+        if not isinstance(source_obj.get("evaluation_plan"), dict):
+            patches.append("missing_evaluation_plan_object")
+        instances = int(_to_float(eval_plan.get("instances"), budget_instances) or budget_instances)
+        holdout_instances = int(_to_float(eval_plan.get("holdout_instances"), budget_holdout) or 0)
         if budget_instances > 0:
             instances = max(1, min(instances, budget_instances))
         if budget_holdout >= 0:
             holdout_instances = max(0, min(holdout_instances, budget_holdout))
-        plan["evaluation_plan"] = {
-            "instances": instances,
-            "holdout_instances": holdout_instances,
+
+        rationale = source_obj.get("rationale", [])
+        if not isinstance(rationale, list):
+            rationale = []
+            patches.append("rationale_not_list")
+        rationale = [str(x) for x in rationale][:8]
+        if len(rationale) < 2:
+            rationale.extend(
+                [
+                    "Reference: stagnation_len and invalid_rate_k from ObservationPacket.",
+                    "Reference: op_stats_k.e2.mean_delta from ObservationPacket.",
+                ]
+            )
+            rationale = rationale[:8]
+            patches.append("rationale_too_short_defaulted")
+
+        out = {
+            "diagnosis_used": str(source_obj.get("diagnosis_used", diagnosis.get("summary", "diagnosis"))),
+            "op_probs": op_probs_out,
+            "parent_mix": parent_mix_out,
+            "prompt_modifiers": prompt_modifiers,
+            "evaluation_plan": {
+                "instances": instances,
+                "holdout_instances": holdout_instances,
+            },
+            "rationale": rationale,
         }
-        plan["diagnosis_used"] = str(plan.get("diagnosis_used", diagnosis.get("summary", "diagnosis")))
-        rationale = plan.get("rationale", [])
-        plan["rationale"] = [str(x) for x in rationale][:8] if isinstance(rationale, list) else []
-        return plan
+        return out, {"fallback_used": fallback_used, "patched": len(patches) > 0, "patches": patches}
 
     def _ensure_guardrails(self, plan, diagnosis, observation):
-        plan = self._sanitize_plan(plan, diagnosis, observation)
+        plan, sanitize_meta = self._sanitize_plan(plan, diagnosis, observation)
         reasons = []
         op_probs = dict(plan["op_probs"])
         parent_mix = dict(plan["parent_mix"])
-        last_used_ops = observation.get("last_used_ops", [])
-        if not isinstance(last_used_ops, list):
-            last_used_ops = []
+        last_used_ops = observation.get("last_used_ops", []) if isinstance(observation.get("last_used_ops"), list) else []
         recent_3 = [str(x) for x in last_used_ops[-3:]]
         op_stats_k = observation.get("op_stats_k", {}) if isinstance(observation.get("op_stats_k"), dict) else {}
         e2_invalid = 0.0
         if isinstance(op_stats_k.get("e2"), dict):
-            e2_invalid = float(op_stats_k["e2"].get("invalid_rate", 0.0) or 0.0)
-        invalid_rate_k = float(observation.get("invalid_rate_k", 0.0) or 0.0)
-        diag_invalid_risk = float(diagnosis.get("factors", {}).get("invalid_risk", 0.0) or 0.0)
-        diversity_score = float(observation.get("diversity_score", 0.0) or 0.0)
+            e2_invalid = _to_float(op_stats_k["e2"].get("invalid_rate"), 0.0) or 0.0
+        invalid_rate_k = _to_float(observation.get("invalid_rate_k"), 0.0) or 0.0
+        diag_invalid_risk = _to_float((diagnosis.get("factors", {}) if isinstance(diagnosis, dict) else {}).get("invalid_risk"), 0.0) or 0.0
+        diversity_score = _to_float(observation.get("diversity_score"), 0.0) or 0.0
         stagnation_len = int(observation.get("stagnation_len", 0) or 0)
 
         if op_probs.get("e1", 0.0) > 0.05:
@@ -476,7 +755,6 @@ class AgenticController:
         if e2_invalid <= 0.40 and op_probs.get("e2", 0.0) < 0.25:
             op_probs["e2"] = 0.25
             reasons.append("Raised e2 to floor 0.25.")
-
         if invalid_rate_k >= 0.30 or diag_invalid_risk >= 0.70:
             if op_probs.get("e1", 0.0) > 0.0:
                 reasons.append("Disabled e1 due to invalid spike rule.")
@@ -486,11 +764,9 @@ class AgenticController:
                 reasons.append("Reduced m1 due to invalid spike rule.")
             op_probs["m2"] = op_probs.get("m2", 0.0) + 0.08
             op_probs["m3"] = op_probs.get("m3", 0.0) + 0.08
-
         if diversity_score > 0.70 and op_probs.get("e1", 0.0) > 0.0:
             op_probs["e1"] = min(op_probs["e1"], 0.02)
             reasons.append("Lowered e1 because diversity is already high.")
-
         if stagnation_len >= 3 and op_probs.get("e2", 0.0) < max(op_probs.values()):
             op_probs["e2"] = max(op_probs["e2"], 0.35)
             reasons.append("Increased e2 for structured exploration during stagnation.")
@@ -520,55 +796,49 @@ class AgenticController:
                 "holdout_instances": holdout_instances,
             },
         }
-        return verdict, reasons, final_plan
+        meta = {
+            "sanitize_meta": sanitize_meta,
+            "guardrail_reasons": list(reasons),
+            "guardrails_applied": len(reasons) > 0,
+        }
+        return verdict, reasons, final_plan, meta
 
-    def _fallback_critic(self, planner_output, diagnosis, observation):
-        verdict, reasons, final_plan = self._ensure_guardrails(planner_output, diagnosis, observation)
-        return {"verdict": verdict, "reasons": reasons, "final_plan": final_plan}
-
-    def _sanitize_critic(self, critic_output, planner_output, diagnosis, observation):
-        if not isinstance(critic_output, dict):
-            critic_output = self._fallback_critic(planner_output, diagnosis, observation)
-        final_plan = critic_output.get("final_plan", {}) if isinstance(critic_output.get("final_plan"), dict) else {}
-        verdict, reasons, guarded_plan = self._ensure_guardrails(final_plan, diagnosis, observation)
-        critic_output["verdict"] = str(critic_output.get("verdict", verdict)).lower()
-        if critic_output["verdict"] not in ["approve", "revise"]:
-            critic_output["verdict"] = verdict
-        critic_reasons = critic_output.get("reasons", [])
-        if not isinstance(critic_reasons, list):
-            critic_reasons = []
-        merged_reasons = [str(x) for x in critic_reasons][:8]
-        for r in reasons:
-            if r not in merged_reasons:
-                merged_reasons.append(r)
-        critic_output["reasons"] = merged_reasons[:10]
-        critic_output["final_plan"] = guarded_plan
-        return critic_output
-
-    def _build_prompt(self, template, **kwargs):
-        base = kwargs.get("PROJECT_CONTEXT", PROJECT_CONTEXT_BLOCK)
-        return template.format(PROJECT_CONTEXT=base, **kwargs)
-
-    def _now(self):
-        return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    def _classify_stage(self, llm_meta, sanitize_meta):
+        fully_fallback = bool(sanitize_meta.get("fallback_used", False))
+        llm_patched = bool(sanitize_meta.get("patched", False) and not fully_fallback)
+        pure_llm = bool((not fully_fallback) and (not llm_patched) and llm_meta.get("success", False))
+        return {
+            "pure_llm_output": pure_llm,
+            "llm_output_patched": llm_patched,
+            "fully_fallback": fully_fallback,
+        }
 
     def run(self, observation):
         observation_json = json.dumps(observation, ensure_ascii=True)
 
-        diagnoser_prompt = self._build_prompt(
-            DIAGNOSER_PROMPT_TEMPLATE,
-            OBS_JSON=observation_json,
+        diagnoser_prompt = self._build_prompt(DIAGNOSER_PROMPT_TEMPLATE, OBS_JSON=observation_json)
+        diagnosis_raw, diagnosis_llm_meta = self.call_llm_json(
+            prompt=diagnoser_prompt,
+            schema_name="diagnosis",
+            validator=lambda obj: self._validate_diagnosis_output(obj, observation),
+            corrective_schema_hint='{"summary":str,"factors":{...},"diagnosis_labels":[...],"evidence":[...]}',
         )
-        diagnosis_raw, diagnosis_text = self._query_json(diagnoser_prompt)
-        diagnosis = self._sanitize_diagnosis(diagnosis_raw, observation)
+        diagnosis, diagnosis_sanitize_meta = self._sanitize_diagnosis(diagnosis_raw, observation)
+        diagnosis_flags = self._classify_stage(diagnosis_llm_meta, diagnosis_sanitize_meta)
 
         planner_prompt = self._build_prompt(
             PLANNER_PROMPT_TEMPLATE,
             DIAG_JSON=json.dumps(diagnosis, ensure_ascii=True),
             OBS_JSON=observation_json,
         )
-        planner_raw, planner_text = self._query_json(planner_prompt)
-        planner_output = self._sanitize_plan(planner_raw, diagnosis, observation)
+        planner_raw, planner_llm_meta = self.call_llm_json(
+            prompt=planner_prompt,
+            schema_name="planner",
+            validator=lambda obj: self._validate_planner_output(obj, diagnosis, observation),
+            corrective_schema_hint='{"diagnosis_used":str,"op_probs":{"e1":..},"parent_mix":{"elite":..},"prompt_modifiers":[..],"evaluation_plan":{"instances":..},"rationale":[..]}',
+        )
+        planner_output, planner_sanitize_meta = self._sanitize_plan(planner_raw, diagnosis, observation)
+        planner_flags = self._classify_stage(planner_llm_meta, planner_sanitize_meta)
 
         critic_prompt = self._build_prompt(
             CRITIC_PROMPT_TEMPLATE,
@@ -576,8 +846,34 @@ class AgenticController:
             DIAG_JSON=json.dumps(diagnosis, ensure_ascii=True),
             OBS_JSON=observation_json,
         )
-        critic_raw, critic_text = self._query_json(critic_prompt)
-        critic_output = self._sanitize_critic(critic_raw, planner_output, diagnosis, observation)
+        critic_raw, critic_llm_meta = self.call_llm_json(
+            prompt=critic_prompt,
+            schema_name="critic",
+            validator=lambda obj: self._validate_critic_output(obj, planner_output, diagnosis, observation),
+            corrective_schema_hint='{"verdict":"approve|revise","reasons":[...],"final_plan":{"op_probs":{...},"parent_mix":{...}}}',
+        )
+        if not isinstance(critic_raw, dict):
+            critic_raw = {"verdict": "revise", "reasons": ["critic_fallback_non_dict"], "final_plan": planner_output}
+        verdict, reasons, final_plan, critic_guardrail_meta = self._ensure_guardrails(
+            critic_raw.get("final_plan", {}),
+            diagnosis,
+            observation,
+        )
+        critic_output = {
+            "verdict": str(critic_raw.get("verdict", verdict)).lower() if str(critic_raw.get("verdict", verdict)).lower() in ["approve", "revise"] else verdict,
+            "reasons": [str(x) for x in (critic_raw.get("reasons", []) if isinstance(critic_raw.get("reasons"), list) else [])][:10],
+            "final_plan": final_plan,
+        }
+        for r in reasons:
+            if r not in critic_output["reasons"]:
+                critic_output["reasons"].append(r)
+        critic_output["reasons"] = critic_output["reasons"][:12]
+        critic_sanitize_meta = {
+            "fallback_used": False,
+            "patched": bool(critic_guardrail_meta.get("guardrails_applied", False)),
+            "patches": critic_guardrail_meta.get("guardrail_reasons", []),
+        }
+        critic_flags = self._classify_stage(critic_llm_meta, critic_sanitize_meta)
 
         result = {
             "time": self._now(),
@@ -586,9 +882,27 @@ class AgenticController:
             "planner_output": planner_output,
             "critic_output": critic_output,
             "raw": {
-                "diagnosis_text": diagnosis_text,
-                "planner_text": planner_text,
-                "critic_text": critic_text,
+                "diagnosis_text": diagnosis_llm_meta["attempts"][-1]["raw_output"] if diagnosis_llm_meta.get("attempts") else None,
+                "planner_text": planner_llm_meta["attempts"][-1]["raw_output"] if planner_llm_meta.get("attempts") else None,
+                "critic_text": critic_llm_meta["attempts"][-1]["raw_output"] if critic_llm_meta.get("attempts") else None,
+            },
+            "debug": {
+                "diagnoser": {
+                    "llm": diagnosis_llm_meta,
+                    "sanitize": diagnosis_sanitize_meta,
+                    "flags": diagnosis_flags,
+                },
+                "planner": {
+                    "llm": planner_llm_meta,
+                    "sanitize": planner_sanitize_meta,
+                    "flags": planner_flags,
+                },
+                "critic": {
+                    "llm": critic_llm_meta,
+                    "sanitize": critic_sanitize_meta,
+                    "flags": critic_flags,
+                    "guardrail_meta": critic_guardrail_meta,
+                },
             },
         }
         return result

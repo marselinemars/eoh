@@ -89,6 +89,9 @@ class EOH:
         self.agent_diagnosis_log_path = os.path.join(self.output_path, "results", "agent_diagnosis.jsonl")
         self.agent_plan_log_path = os.path.join(self.output_path, "results", "agent_plan.jsonl")
         self.agent_critic_log_path = os.path.join(self.output_path, "results", "agent_critic.jsonl")
+        self.llm_diagnoser_raw_log_path = os.path.join(self.output_path, "results", "llm_diagnoser_raw.jsonl")
+        self.llm_planner_raw_log_path = os.path.join(self.output_path, "results", "llm_planner_raw.jsonl")
+        self.llm_critic_raw_log_path = os.path.join(self.output_path, "results", "llm_critic_raw.jsonl")
 
         print("- EoH parameters loaded -")
 
@@ -129,6 +132,12 @@ class EOH:
             pass
         with open(self.agent_critic_log_path, "w", encoding="utf-8") as _:
             pass
+        with open(self.llm_diagnoser_raw_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.llm_planner_raw_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.llm_critic_raw_log_path, "w", encoding="utf-8") as _:
+            pass
 
     def _write_run_log(self, record):
         with open(self.run_log_path, "a", encoding="utf-8") as f:
@@ -152,6 +161,18 @@ class EOH:
 
     def _write_agent_critic_log(self, record):
         with open(self.agent_critic_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_llm_diagnoser_raw_log(self, record):
+        with open(self.llm_diagnoser_raw_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_llm_planner_raw_log(self, record):
+        with open(self.llm_planner_raw_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_llm_critic_raw_log(self, record):
+        with open(self.llm_critic_raw_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
     def _code_hash(self, code):
@@ -627,6 +648,9 @@ class EOH:
             active_parent_mix = None
             active_prompt_modifiers = []
             active_op_probs = None
+            diagnoser_stage_flags = {}
+            planner_stage_flags = {}
+            critic_stage_flags = {}
 
             if self.mode == "routed":
                 if self.controller is not None:
@@ -652,6 +676,13 @@ class EOH:
                     diagnosis = controller_result["diagnosis"]
                     planner_output = controller_result["planner_output"]
                     critic_output = controller_result["critic_output"]
+                    controller_debug = controller_result.get("debug", {})
+                    diag_debug = controller_debug.get("diagnoser", {}) if isinstance(controller_debug.get("diagnoser", {}), dict) else {}
+                    plan_debug = controller_debug.get("planner", {}) if isinstance(controller_debug.get("planner", {}), dict) else {}
+                    critic_debug = controller_debug.get("critic", {}) if isinstance(controller_debug.get("critic", {}), dict) else {}
+                    diagnoser_stage_flags = diag_debug.get("flags", {}) if isinstance(diag_debug.get("flags", {}), dict) else {}
+                    planner_stage_flags = plan_debug.get("flags", {}) if isinstance(plan_debug.get("flags", {}), dict) else {}
+                    critic_stage_flags = critic_debug.get("flags", {}) if isinstance(critic_debug.get("flags", {}), dict) else {}
                     final_plan = critic_output["final_plan"]
                     active_op_probs = final_plan["op_probs"]
                     active_parent_mix = final_plan["parent_mix"]
@@ -668,6 +699,13 @@ class EOH:
                             "factors": diagnosis.get("factors"),
                             "diagnosis_labels": diagnosis.get("diagnosis_labels"),
                             "evidence": diagnosis.get("evidence"),
+                            "pure_llm_output": bool(diag_debug.get("flags", {}).get("pure_llm_output", False)),
+                            "llm_output_patched": bool(diag_debug.get("flags", {}).get("llm_output_patched", False)),
+                            "fully_fallback": bool(diag_debug.get("flags", {}).get("fully_fallback", False)),
+                            "fallback_used": bool(diag_debug.get("sanitize", {}).get("fallback_used", False)),
+                            "retries_used": int(diag_debug.get("llm", {}).get("retries_used", 0) or 0),
+                            "validation_errors": diag_debug.get("llm", {}).get("last_errors", []),
+                            "sanitize_patches": diag_debug.get("sanitize", {}).get("patches", []),
                         }
                     )
                     self._write_agent_plan_log(
@@ -680,6 +718,13 @@ class EOH:
                             "prompt_modifiers": planner_output.get("prompt_modifiers"),
                             "evaluation_plan": planner_output.get("evaluation_plan"),
                             "rationale": planner_output.get("rationale"),
+                            "pure_llm_output": bool(plan_debug.get("flags", {}).get("pure_llm_output", False)),
+                            "llm_output_patched": bool(plan_debug.get("flags", {}).get("llm_output_patched", False)),
+                            "fully_fallback": bool(plan_debug.get("flags", {}).get("fully_fallback", False)),
+                            "fallback_used": bool(plan_debug.get("sanitize", {}).get("fallback_used", False)),
+                            "retries_used": int(plan_debug.get("llm", {}).get("retries_used", 0) or 0),
+                            "validation_errors": plan_debug.get("llm", {}).get("last_errors", []),
+                            "sanitize_patches": plan_debug.get("sanitize", {}).get("patches", []),
                         }
                     )
                     interface_ec.set_controller_context(
@@ -695,6 +740,53 @@ class EOH:
                             "reasons": critic_output.get("reasons"),
                             "final_plan": final_plan,
                             "chosen_operator": chosen_operator,
+                            "pure_llm_output": bool(critic_debug.get("flags", {}).get("pure_llm_output", False)),
+                            "llm_output_patched": bool(critic_debug.get("flags", {}).get("llm_output_patched", False)),
+                            "fully_fallback": bool(critic_debug.get("flags", {}).get("fully_fallback", False)),
+                            "retries_used": int(critic_debug.get("llm", {}).get("retries_used", 0) or 0),
+                            "validation_errors": critic_debug.get("llm", {}).get("last_errors", []),
+                            "sanitize_patches": critic_debug.get("sanitize", {}).get("patches", []),
+                        }
+                    )
+                    self._write_llm_diagnoser_raw_log(
+                        {
+                            "gen": int(pop + 1),
+                            "mode": self.mode,
+                            "raw_output": controller_result.get("raw", {}).get("diagnosis_text"),
+                            "attempts": diag_debug.get("llm", {}).get("attempts", []),
+                            "retries_used": int(diag_debug.get("llm", {}).get("retries_used", 0) or 0),
+                            "last_errors": diag_debug.get("llm", {}).get("last_errors", []),
+                            "fallback_used": bool(diag_debug.get("sanitize", {}).get("fallback_used", False)),
+                            "pure_llm_output": bool(diag_debug.get("flags", {}).get("pure_llm_output", False)),
+                            "llm_output_patched": bool(diag_debug.get("flags", {}).get("llm_output_patched", False)),
+                            "fully_fallback": bool(diag_debug.get("flags", {}).get("fully_fallback", False)),
+                        }
+                    )
+                    self._write_llm_planner_raw_log(
+                        {
+                            "gen": int(pop + 1),
+                            "mode": self.mode,
+                            "raw_output": controller_result.get("raw", {}).get("planner_text"),
+                            "attempts": plan_debug.get("llm", {}).get("attempts", []),
+                            "retries_used": int(plan_debug.get("llm", {}).get("retries_used", 0) or 0),
+                            "last_errors": plan_debug.get("llm", {}).get("last_errors", []),
+                            "fallback_used": bool(plan_debug.get("sanitize", {}).get("fallback_used", False)),
+                            "pure_llm_output": bool(plan_debug.get("flags", {}).get("pure_llm_output", False)),
+                            "llm_output_patched": bool(plan_debug.get("flags", {}).get("llm_output_patched", False)),
+                            "fully_fallback": bool(plan_debug.get("flags", {}).get("fully_fallback", False)),
+                        }
+                    )
+                    self._write_llm_critic_raw_log(
+                        {
+                            "gen": int(pop + 1),
+                            "mode": self.mode,
+                            "raw_output": controller_result.get("raw", {}).get("critic_text"),
+                            "attempts": critic_debug.get("llm", {}).get("attempts", []),
+                            "retries_used": int(critic_debug.get("llm", {}).get("retries_used", 0) or 0),
+                            "last_errors": critic_debug.get("llm", {}).get("last_errors", []),
+                            "pure_llm_output": bool(critic_debug.get("flags", {}).get("pure_llm_output", False)),
+                            "llm_output_patched": bool(critic_debug.get("flags", {}).get("llm_output_patched", False)),
+                            "fully_fallback": bool(critic_debug.get("flags", {}).get("fully_fallback", False)),
                         }
                     )
                 else:
@@ -905,6 +997,15 @@ class EOH:
                 "parent_mix": active_parent_mix,
                 "prompt_modifiers": active_prompt_modifiers,
                 "op_probs": active_op_probs,
+                "diagnoser_fully_fallback": bool(diagnoser_stage_flags.get("fully_fallback", False)),
+                "diagnoser_llm_patched": bool(diagnoser_stage_flags.get("llm_output_patched", False)),
+                "diagnoser_pure_llm": bool(diagnoser_stage_flags.get("pure_llm_output", False)),
+                "planner_fully_fallback": bool(planner_stage_flags.get("fully_fallback", False)),
+                "planner_llm_patched": bool(planner_stage_flags.get("llm_output_patched", False)),
+                "planner_pure_llm": bool(planner_stage_flags.get("pure_llm_output", False)),
+                "critic_fully_fallback": bool(critic_stage_flags.get("fully_fallback", False)),
+                "critic_llm_patched": bool(critic_stage_flags.get("llm_output_patched", False)),
+                "critic_pure_llm": bool(critic_stage_flags.get("pure_llm_output", False)),
             }
             self._write_run_log(run_record)
 
