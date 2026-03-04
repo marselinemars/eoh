@@ -289,12 +289,13 @@ class EOH:
         if (generation_index + 1) <= self.route_warmup_gens:
             return self._choose_available_operator("e2", fallbacks=["m1", "m2", "e1"])
 
-        if diagnosis_label == "OVERFIT_RISK":
-            return self._choose_available_operator("m3", fallbacks=["m1", "e2", "m2", "e1"])
-
         # Cooldown: prevent repeated global novelty collapse.
+        # During cooldown, force e2 regardless of diagnosis.
         if e1_cooldown_remaining > 0:
             return self._choose_available_operator("e2", fallbacks=["m1", "m2", "e1"])
+
+        if diagnosis_label == "OVERFIT_RISK":
+            return self._choose_available_operator("m3", fallbacks=["m1", "e2", "m2", "e1"])
 
         if diagnosis_label == "NEED_PARAM_TUNING":
             if self.route_use_probabilistic:
@@ -308,11 +309,7 @@ class EOH:
             return self._choose_available_operator("m1", fallbacks=["e2", "m2", "e1"])
 
         if diagnosis_label == "NEED_BACKBONE_VARIANT":
-            if self.route_use_probabilistic:
-                return self._sample_operator(
-                    {"e2": 0.85, "m1": 0.15},
-                    fallback_order=["e2", "m1", "m2", "e1"],
-                )
+            # Enforce BV -> e2.
             return self._choose_available_operator("e2", fallbacks=["m1", "m2", "e1"])
 
         if diagnosis_label == "NEED_GLOBAL_NOVELTY":
@@ -326,7 +323,7 @@ class EOH:
                 return self._choose_available_operator("e2", fallbacks=["m1", "m2", "e1"])
             if self.route_use_probabilistic:
                 return self._sample_operator(
-                    {"e2": 0.7, "e1": 0.2, "m1": 0.1},
+                    {"e2": 0.85, "e1": 0.15},
                     fallback_order=["e2", "e1", "m1", "m2"],
                 )
             return self._choose_available_operator("e1", fallbacks=["e2", "m1", "m2"])
