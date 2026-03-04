@@ -41,8 +41,28 @@ class Evolution():
         self.log_parse_events = os.getenv("EOH_LOG_PARSE_EVENTS", "0") == "1"
         self.llm_io_dir = Path(os.getenv("EOH_LLM_IO_DIR", "./results/llm_io"))
         self.parse_log_path = self.llm_io_dir / "parse_events.jsonl"
+        self.active_prompt_modifiers = []
         if self.log_parse_events:
             self.llm_io_dir.mkdir(parents=True, exist_ok=True)
+
+    def set_prompt_modifiers(self, modifiers):
+        if not isinstance(modifiers, list):
+            self.active_prompt_modifiers = []
+            return
+        cleaned = []
+        for item in modifiers:
+            text = str(item).strip()
+            if text:
+                cleaned.append(text)
+        self.active_prompt_modifiers = cleaned[:4]
+
+    def _append_additional_constraints(self, prompt_content):
+        if len(self.active_prompt_modifiers) == 0:
+            return prompt_content
+        extra = "\nADDITIONAL CONSTRAINTS FOR THIS GENERATION:\n"
+        for modifier in self.active_prompt_modifiers:
+            extra += f"- {modifier}\n"
+        return prompt_content + extra
 
     def _strict_output_rules(self):
         return (
@@ -288,6 +308,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def e1(self,parents):
       
         prompt_content = self.get_prompt_e1(parents)
+        prompt_content = self._append_additional_constraints(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ e1 ] : \n", prompt_content )
@@ -307,6 +328,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def e2(self,parents):
       
         prompt_content = self.get_prompt_e2(parents)
+        prompt_content = self._append_additional_constraints(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ e2 ] : \n", prompt_content )
@@ -326,6 +348,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def m1(self,parents):
       
         prompt_content = self.get_prompt_m1(parents)
+        prompt_content = self._append_additional_constraints(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m1 ] : \n", prompt_content )
@@ -345,6 +368,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def m2(self,parents):
       
         prompt_content = self.get_prompt_m2(parents)
+        prompt_content = self._append_additional_constraints(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m2 ] : \n", prompt_content )
@@ -364,6 +388,7 @@ Finally, provide the revised code, keeping the function name, inputs, and output
     def m3(self,parents):
       
         prompt_content = self.get_prompt_m3(parents)
+        prompt_content = self._append_additional_constraints(prompt_content)
 
         if self.debug_mode:
             print("\n >>> check prompt for creating algorithm using [ m3 ] : \n", prompt_content )

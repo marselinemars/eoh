@@ -7,6 +7,8 @@ from .evaluator_accelerate import add_numba_decorator
 import re
 import concurrent.futures
 import os
+import hashlib
+import random
 
 class InterfaceEC():
     def __init__(self, pop_size, m, api_endpoint, api_key, llm_model,llm_use_local,llm_local_url, debug_mode, interface_prob, select,n_p,timeout,use_numba,**kwargs):
@@ -28,6 +30,86 @@ class InterfaceEC():
         self.timeout = timeout
         self.use_numba = use_numba
         self.max_offspring_retries = int(os.getenv("EOH_OFFSPRING_RETRIES", "4"))
+        self.parallel_backend = os.getenv("EOH_PARALLEL_BACKEND", "loky")
+        self.controller_parent_mix = None
+        self.controller_prompt_modifiers = []
+
+    def set_controller_context(self, parent_mix=None, prompt_modifiers=None):
+        if isinstance(parent_mix, dict):
+            self.controller_parent_mix = dict(parent_mix)
+        else:
+            self.controller_parent_mix = None
+
+        if isinstance(prompt_modifiers, list):
+            self.controller_prompt_modifiers = [str(x).strip() for x in prompt_modifiers if str(x).strip()][:4]
+        else:
+            self.controller_prompt_modifiers = []
+        self.evol.set_prompt_modifiers(self.controller_prompt_modifiers)
+
+    def _normalize_mix(self, mix):
+        keys = ["elite", "diverse", "random"]
+        vals = {}
+        for k in keys:
+            try:
+                vals[k] = max(0.0, float(mix.get(k, 0.0)))
+            except (TypeError, ValueError):
+                vals[k] = 0.0
+        total = sum(vals.values())
+        if total <= 1e-12:
+            return {"elite": 0.5, "diverse": 0.3, "random": 0.2}
+        return {k: vals[k] / total for k in keys}
+
+    def _build_parent_pools(self, pop):
+        if len(pop) == 0:
+            return {"elite": [], "diverse": [], "random": []}
+        sorted_pop = sorted(pop, key=lambda x: x.get("objective", float("inf")))
+        elite_count = max(1, int(np.ceil(0.3 * len(sorted_pop))))
+        elite_pool = sorted_pop[:elite_count]
+        non_elite = sorted_pop[elite_count:]
+        if len(non_elite) == 0:
+            non_elite = sorted_pop
+        seen = set()
+        diverse_pool = []
+        for ind in non_elite:
+            code = ind.get("code")
+            if not isinstance(code, str):
+                continue
+            code_hash = hashlib.sha1(code.encode("utf-8")).hexdigest()
+            if code_hash in seen:
+                continue
+            seen.add(code_hash)
+            diverse_pool.append(ind)
+        if len(diverse_pool) == 0:
+            diverse_pool = non_elite
+        return {
+            "elite": elite_pool,
+            "diverse": diverse_pool,
+            "random": sorted_pop,
+        }
+
+    def _select_parents(self, pop, m):
+        if len(pop) == 0:
+            return []
+        if self.controller_parent_mix is None:
+            return self.select.parent_selection(pop, m)
+        mix = self._normalize_mix(self.controller_parent_mix)
+        pools = self._build_parent_pools(pop)
+        parents = []
+        keys = ["elite", "diverse", "random"]
+        for _ in range(m):
+            draw = random.random()
+            cum = 0.0
+            picked_bucket = "random"
+            for key in keys:
+                cum += mix[key]
+                if draw <= cum:
+                    picked_bucket = key
+                    break
+            pool = pools.get(picked_bucket, [])
+            if len(pool) == 0:
+                pool = pools["random"]
+            parents.append(random.choice(pool))
+        return parents
         
     def code2file(self,code):
         with open("./ael_alg.py", "w") as file:
@@ -103,6 +185,7 @@ class InterfaceEC():
     
 
     def _get_alg(self,pop,operator):
+        self.evol.set_prompt_modifiers(self.controller_prompt_modifiers)
         offspring = {
             'algorithm': None,
             'code': None,
@@ -113,19 +196,19 @@ class InterfaceEC():
             parents = None
             [offspring['code'],offspring['algorithm']] =  self.evol.i1()            
         elif operator == "e1":
-            parents = self.select.parent_selection(pop,self.m)
+            parents = self._select_parents(pop,self.m)
             [offspring['code'],offspring['algorithm']] = self.evol.e1(parents)
         elif operator == "e2":
-            parents = self.select.parent_selection(pop,self.m)
+            parents = self._select_parents(pop,self.m)
             [offspring['code'],offspring['algorithm']] = self.evol.e2(parents) 
         elif operator == "m1":
-            parents = self.select.parent_selection(pop,1)
+            parents = self._select_parents(pop,1)
             [offspring['code'],offspring['algorithm']] = self.evol.m1(parents[0])   
         elif operator == "m2":
-            parents = self.select.parent_selection(pop,1)
+            parents = self._select_parents(pop,1)
             [offspring['code'],offspring['algorithm']] = self.evol.m2(parents[0]) 
         elif operator == "m3":
-            parents = self.select.parent_selection(pop,1)
+            parents = self._select_parents(pop,1)
             [offspring['code'],offspring['algorithm']] = self.evol.m3(parents[0]) 
         else:
             print(f"Evolution operator [{operator}] has not been implemented ! \n") 
@@ -215,7 +298,12 @@ class InterfaceEC():
     def get_algorithm(self, pop, operator):
         results = []
         try:
-            results = Parallel(n_jobs=self.n_p,timeout=self.timeout+15)(delayed(self.get_offspring)(pop, operator) for _ in range(self.pop_size))
+            results = Parallel(
+                n_jobs=self.n_p,
+                timeout=self.timeout + 15,
+                backend=self.parallel_backend,
+                batch_size=1,
+            )(delayed(self.get_offspring)(pop, operator) for _ in range(self.pop_size))
         except Exception as e:
             if self.debug:
                 print(f"Error: {e}")

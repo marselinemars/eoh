@@ -47,11 +47,15 @@ class Paras():
         self.eval_instances_per_gen = None
         self.holdout_instances = 64
         self.holdout_eval_interval = 1
+        self.eval_parallel_instances = 1
 
         #####################
         ###  Run mode / logging ###
         #####################
         self.eoh_mode = "baseline"  # baseline | routed
+        self.route_controller_enabled = True
+        self.route_controller_window = 5
+        self.route_controller_use_llm = True
         self.route_improvement_epsilon = 1e-12
         self.route_stagnation_k = 3
         self.route_invalid_rate_threshold = 0.5

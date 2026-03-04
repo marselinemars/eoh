@@ -6,6 +6,7 @@ import types
 import warnings
 import sys
 import os
+import concurrent.futures
 
 class BPONLINE():
     def __init__(self, paras=None):
@@ -14,9 +15,11 @@ class BPONLINE():
         self.prompts = GetPrompts()
         self.eval_instances_per_gen = None
         self.holdout_instances = 64
+        self.eval_parallel_instances = 1
         if paras is not None:
             self.eval_instances_per_gen = getattr(paras, "eval_instances_per_gen", None)
             self.holdout_instances = int(getattr(paras, "holdout_instances", 64))
+            self.eval_parallel_instances = max(1, int(getattr(paras, "eval_parallel_instances", 1)))
 
     def _select_train_instances(self, dataset_items):
         if self.eval_instances_per_gen is None:
@@ -69,15 +72,23 @@ class BPONLINE():
         return packing, bins
 
     def _evaluate_dataset(self, dataset_items, alg, lb_value):
-        num_bins_list = []
-        for _, instance in dataset_items:
+        def _eval_one(instance):
             capacity = instance['capacity']
             items = np.array(instance['items'])
-
             bins = np.array([capacity for _ in range(instance['num_items'])])
             _, bins_packed = self.online_binpack(items, bins, alg)
-            num_bins = (bins_packed != capacity).sum()
-            num_bins_list.append(-num_bins)
+            return (bins_packed != capacity).sum()
+
+        num_bins_list = []
+        instances = [instance for _, instance in dataset_items]
+        if self.eval_parallel_instances > 1 and len(instances) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.eval_parallel_instances) as executor:
+                for num_bins in executor.map(_eval_one, instances):
+                    num_bins_list.append(-num_bins)
+        else:
+            for instance in instances:
+                num_bins = _eval_one(instance)
+                num_bins_list.append(-num_bins)
 
         if len(num_bins_list) == 0:
             return None

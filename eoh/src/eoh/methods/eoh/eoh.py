@@ -7,6 +7,7 @@ import hashlib
 import concurrent.futures
 
 from .eoh_interface_EC import InterfaceEC
+from .agentic_controller import AgenticController
 # main class for eoh
 class EOH:
 
@@ -62,9 +63,14 @@ class EOH:
         self.use_numba = paras.eva_numba_decorator
 
         self.mode = getattr(paras, "eoh_mode", "baseline")
-        if self.mode not in ["baseline", "routed"]:
+        if self.mode not in ["baseline", "routed", "agentic"]:
             print(f"Unknown eoh_mode={self.mode}, fallback to baseline.")
             self.mode = "baseline"
+        if self.mode == "agentic":
+            self.mode = "routed"
+        self.route_controller_enabled = bool(getattr(paras, "route_controller_enabled", True))
+        self.route_controller_window = max(2, int(getattr(paras, "route_controller_window", 5)))
+        self.route_controller_use_llm = bool(getattr(paras, "route_controller_use_llm", True))
         self.route_improvement_epsilon = float(getattr(paras, "route_improvement_epsilon", 1e-12))
         self.route_stagnation_k = int(getattr(paras, "route_stagnation_k", 3))
         self.route_invalid_rate_threshold = float(getattr(paras, "route_invalid_rate_threshold", 0.5))
@@ -79,8 +85,23 @@ class EOH:
         self.log_full_population = bool(getattr(paras, "log_full_population", False))
         self.run_log_path = os.path.join(self.output_path, "results", "run_log.jsonl")
         self.operator_log_path = os.path.join(self.output_path, "results", "operator_events.jsonl")
+        self.agent_observation_log_path = os.path.join(self.output_path, "results", "agent_observation.jsonl")
+        self.agent_diagnosis_log_path = os.path.join(self.output_path, "results", "agent_diagnosis.jsonl")
+        self.agent_plan_log_path = os.path.join(self.output_path, "results", "agent_plan.jsonl")
+        self.agent_critic_log_path = os.path.join(self.output_path, "results", "agent_critic.jsonl")
 
         print("- EoH parameters loaded -")
+
+        self.controller = None
+        if self.mode == "routed" and self.route_controller_enabled and self.route_controller_use_llm:
+            self.controller = AgenticController(
+                self.api_endpoint,
+                self.api_key,
+                self.llm_model,
+                self.use_local_llm,
+                self.llm_local_url,
+                debug_mode=self.debug_mode,
+            )
 
         # Set a random seed
         random.seed(2024)
@@ -100,6 +121,14 @@ class EOH:
             pass
         with open(self.operator_log_path, "w", encoding="utf-8") as _:
             pass
+        with open(self.agent_observation_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.agent_diagnosis_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.agent_plan_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.agent_critic_log_path, "w", encoding="utf-8") as _:
+            pass
 
     def _write_run_log(self, record):
         with open(self.run_log_path, "a", encoding="utf-8") as f:
@@ -107,6 +136,22 @@ class EOH:
 
     def _write_operator_log(self, record):
         with open(self.operator_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_agent_observation_log(self, record):
+        with open(self.agent_observation_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_agent_diagnosis_log(self, record):
+        with open(self.agent_diagnosis_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_agent_plan_log(self, record):
+        with open(self.agent_plan_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_agent_critic_log(self, record):
+        with open(self.agent_critic_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
     def _code_hash(self, code):
@@ -193,6 +238,145 @@ class EOH:
         if len(lengths) == 0:
             return None
         return float(np.mean(np.array(lengths)))
+
+    def _safe_float(self, value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _top_heuristics_summary(self, population, top_k=5):
+        summary = []
+        if len(population) == 0:
+            return summary
+        for rank, individual in enumerate(population[:top_k]):
+            algo = individual.get("algorithm")
+            if isinstance(algo, str):
+                algo_line = " ".join(algo.split())[:180]
+            else:
+                algo_line = ""
+            code = individual.get("code")
+            complexity = len(code) if isinstance(code, str) else 0.0
+            summary.append(
+                {
+                    "id": f"g{rank}_{self._code_hash(code)}",
+                    "fitness": self._to_float_or_none(individual.get("objective")),
+                    "summary": algo_line,
+                    "complexity": float(complexity),
+                }
+            )
+        return summary
+
+    def _compute_improve_rate(self, best_history, window):
+        if len(best_history) < 2:
+            return 0.0
+        window = max(1, int(window))
+        start = max(1, len(best_history) - window)
+        improvements = 0
+        total = 0
+        for idx in range(start, len(best_history)):
+            prev = best_history[idx - 1]
+            curr = best_history[idx]
+            if prev is None or curr is None:
+                continue
+            total += 1
+            if curr < (prev - self.route_improvement_epsilon):
+                improvements += 1
+        if total == 0:
+            return 0.0
+        return float(improvements / total)
+
+    def _build_op_stats_k(self, op_history, window):
+        stats = {op: {"calls": 0, "success_rate": 0.0, "mean_delta": 0.0, "invalid_rate": 0.0} for op in ["e1", "e2", "m1", "m2", "m3"]}
+        window_records = op_history[-max(1, int(window)):]
+        grouped = {op: [] for op in ["e1", "e2", "m1", "m2", "m3"]}
+        for rec in window_records:
+            op = rec.get("operator")
+            if op in grouped:
+                grouped[op].append(rec)
+        for op, records in grouped.items():
+            if len(records) == 0:
+                continue
+            calls = len(records)
+            success_count = 0
+            deltas = []
+            invalids = []
+            for rec in records:
+                n_valid = int(rec.get("n_valid", 0) or 0)
+                n_off = int(rec.get("n_offspring", 0) or 0)
+                if n_valid > 0:
+                    success_count += 1
+                delta = rec.get("delta_best")
+                if delta is not None:
+                    deltas.append(float(delta))
+                invalids.append(self._safe_float(rec.get("invalid_rate", 1.0), default=1.0))
+            stats[op] = {
+                "calls": int(calls),
+                "success_rate": float(success_count / calls),
+                "mean_delta": float(np.mean(np.array(deltas))) if len(deltas) > 0 else 0.0,
+                "invalid_rate": float(np.mean(np.array(invalids))) if len(invalids) > 0 else 1.0,
+            }
+        return stats
+
+    def _build_observation_packet(
+        self,
+        generation_index,
+        population,
+        best_history,
+        no_improve_gens,
+        invalid_rate_k,
+        op_history,
+        last_used_ops,
+        eval_instances_per_gen,
+        holdout_instances,
+    ):
+        best_fitness = self._best_objective(population)
+        prev_best = best_history[-2] if len(best_history) >= 2 else None
+        delta_best = None
+        if prev_best is not None and best_fitness is not None:
+            delta_best = float(prev_best - best_fitness)
+        diversity_abs = self._population_diversity(population)
+        if diversity_abs is None or self.pop_size <= 0:
+            diversity_score = 0.0
+        else:
+            diversity_score = float(diversity_abs) / float(max(1, self.pop_size))
+        observation = {
+            "gen": int(generation_index + 1),
+            "population_size": int(len(population)),
+            "best_fitness": self._to_float_or_none(best_fitness),
+            "best_history": [self._to_float_or_none(v) for v in best_history[-max(2, self.route_controller_window):]],
+            "delta_best": self._to_float_or_none(delta_best),
+            "improve_rate_k": self._compute_improve_rate(best_history, self.route_controller_window),
+            "stagnation_len": int(no_improve_gens),
+            "invalid_rate_k": self._safe_float(invalid_rate_k, default=0.0),
+            "diversity_score": float(max(0.0, min(1.0, diversity_score))),
+            "op_stats_k": self._build_op_stats_k(op_history, self.route_controller_window),
+            "last_used_ops": [str(op) for op in last_used_ops[-self.route_controller_window:]],
+            "top_heuristics": self._top_heuristics_summary(population, top_k=min(5, len(population))),
+            "budget": {
+                "instances": int(eval_instances_per_gen),
+                "holdout_instances": int(holdout_instances),
+            },
+            "notes": f"mode={self.mode}",
+        }
+        return observation
+
+    def _resolve_train_instance_budget(self, interface_prob):
+        configured = getattr(interface_prob, "eval_instances_per_gen", None)
+        if configured is not None:
+            try:
+                return max(1, int(configured))
+            except (TypeError, ValueError):
+                pass
+        instances = getattr(interface_prob, "instances", None)
+        if isinstance(instances, dict):
+            total = 0
+            for dataset in instances.values():
+                if isinstance(dataset, dict):
+                    total += len(dataset)
+            if total > 0:
+                return int(total)
+        return 0
 
     def _choose_available_operator(self, preferred, fallbacks=None):
         if preferred in self.operators:
@@ -416,6 +600,9 @@ class EOH:
         # main loop
         n_op = len(self.operators)
         prev_best = population[0]["objective"] if len(population) > 0 else None
+        best_history = [float(prev_best)] if prev_best is not None else []
+        op_history = []
+        last_used_ops = []
         no_improve_gens = 0
         last_invalid_rate = 0.0
         last_improved = False
@@ -429,32 +616,107 @@ class EOH:
         last_train_at_holdout = None
         best_at_last_e2 = prev_best
         e1_cooldown_remaining = 0
+        eval_instances_budget = self._resolve_train_instance_budget(interface_prob)
+        holdout_instances_budget = int(getattr(interface_prob, "holdout_instances", 0) or 0)
 
         for pop in range(n_start, self.n_pop):
             generation_offspring = []
             chosen_operator = None
             diagnosis_label = "DEFAULT"
             routed_delta_best = None
+            active_parent_mix = None
+            active_prompt_modifiers = []
+            active_op_probs = None
 
             if self.mode == "routed":
-                diagnosis_label = self._diagnose_routed(
-                    last_improved=last_improved,
-                    no_improve_gens=no_improve_gens,
-                    overfit_risk=last_overfit_risk,
-                    recent_ops=recent_ops,
-                    recent_deltas=recent_deltas,
-                    diversity=last_diversity,
-                    code_length_growth=last_code_length_growth,
-                )
-                chosen_operator = self._route_operator(
-                    diagnosis_label=diagnosis_label,
-                    generation_index=pop,
-                    no_improve_gens=no_improve_gens,
-                    recent_ops=recent_ops,
-                    current_best=prev_best,
-                    best_at_last_e2=best_at_last_e2,
-                    e1_cooldown_remaining=e1_cooldown_remaining,
-                )
+                if self.controller is not None:
+                    observation = self._build_observation_packet(
+                        generation_index=pop,
+                        population=population,
+                        best_history=best_history,
+                        no_improve_gens=no_improve_gens,
+                        invalid_rate_k=last_invalid_rate,
+                        op_history=op_history,
+                        last_used_ops=last_used_ops,
+                        eval_instances_per_gen=eval_instances_budget,
+                        holdout_instances=holdout_instances_budget,
+                    )
+                    self._write_agent_observation_log(
+                        {
+                            "gen": int(pop + 1),
+                            "mode": self.mode,
+                            "observation": observation,
+                        }
+                    )
+                    controller_result = self.controller.run(observation)
+                    diagnosis = controller_result["diagnosis"]
+                    planner_output = controller_result["planner_output"]
+                    critic_output = controller_result["critic_output"]
+                    final_plan = critic_output["final_plan"]
+                    active_op_probs = final_plan["op_probs"]
+                    active_parent_mix = final_plan["parent_mix"]
+                    active_prompt_modifiers = final_plan.get("prompt_modifiers", [])
+
+                    labels = diagnosis.get("diagnosis_labels", [])
+                    diagnosis_label = str(labels[0]) if isinstance(labels, list) and len(labels) > 0 else "AGENTIC"
+                    self._write_agent_diagnosis_log(
+                        {
+                            "gen": int(pop + 1),
+                            "mode": self.mode,
+                            "diagnosis_label": diagnosis_label,
+                            "summary": diagnosis.get("summary"),
+                            "factors": diagnosis.get("factors"),
+                            "diagnosis_labels": diagnosis.get("diagnosis_labels"),
+                            "evidence": diagnosis.get("evidence"),
+                        }
+                    )
+                    self._write_agent_plan_log(
+                        {
+                            "gen": int(pop + 1),
+                            "mode": self.mode,
+                            "diagnosis_used": planner_output.get("diagnosis_used"),
+                            "op_probs": planner_output.get("op_probs"),
+                            "parent_mix": planner_output.get("parent_mix"),
+                            "prompt_modifiers": planner_output.get("prompt_modifiers"),
+                            "evaluation_plan": planner_output.get("evaluation_plan"),
+                            "rationale": planner_output.get("rationale"),
+                        }
+                    )
+                    interface_ec.set_controller_context(
+                        parent_mix=active_parent_mix,
+                        prompt_modifiers=active_prompt_modifiers,
+                    )
+                    chosen_operator = self.controller.sample_operator(active_op_probs, self.operators)
+                    self._write_agent_critic_log(
+                        {
+                            "gen": int(pop + 1),
+                            "mode": self.mode,
+                            "verdict": critic_output.get("verdict"),
+                            "reasons": critic_output.get("reasons"),
+                            "final_plan": final_plan,
+                            "chosen_operator": chosen_operator,
+                        }
+                    )
+                else:
+                    interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None)
+                    diagnosis_label = self._diagnose_routed(
+                        last_improved=last_improved,
+                        no_improve_gens=no_improve_gens,
+                        overfit_risk=last_overfit_risk,
+                        recent_ops=recent_ops,
+                        recent_deltas=recent_deltas,
+                        diversity=last_diversity,
+                        code_length_growth=last_code_length_growth,
+                    )
+                    chosen_operator = self._route_operator(
+                        diagnosis_label=diagnosis_label,
+                        generation_index=pop,
+                        no_improve_gens=no_improve_gens,
+                        recent_ops=recent_ops,
+                        current_best=prev_best,
+                        best_at_last_e2=best_at_last_e2,
+                        e1_cooldown_remaining=e1_cooldown_remaining,
+                    )
                 print(f" OP: {chosen_operator}, [routed] ", end="|")
                 best_before = self._best_objective(population)
                 _, offsprings = interface_ec.get_algorithm(population, chosen_operator)
@@ -487,8 +749,13 @@ class EOH:
                     "best_before": self._to_float_or_none(best_before),
                     "best_after": self._to_float_or_none(best_after),
                     "delta_best": self._to_float_or_none(delta_best),
+                    "op_probs": active_op_probs,
+                    "parent_mix": active_parent_mix,
+                    "prompt_modifiers": active_prompt_modifiers,
                 }
                 self._write_operator_log(op_record)
+                op_history.append(op_record)
+                last_used_ops.append(chosen_operator)
                 recent_ops.append(chosen_operator)
                 recent_deltas.append(routed_delta_best)
                 if len(recent_ops) > self.route_recent_window:
@@ -502,6 +769,7 @@ class EOH:
                     e1_cooldown_remaining -= 1
                 print()
             else:
+                interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None)
                 diagnosis_label = "BASELINE_SCHEDULE"
                 chosen_operator = "schedule:" + ",".join(self.operators)
                 for i in range(n_op):
@@ -543,6 +811,7 @@ class EOH:
                         "delta_best": self._to_float_or_none(delta_best),
                     }
                     self._write_operator_log(op_record)
+                    op_history.append(op_record)
                     print()
                 if e1_cooldown_remaining > 0:
                     e1_cooldown_remaining -= 1
@@ -558,6 +827,8 @@ class EOH:
                 last_code_length_growth = None
             prev_avg_code_length = avg_code_length
             best_fitness = population[0]["objective"] if len(population) > 0 else None
+            if best_fitness is not None:
+                best_history.append(float(best_fitness))
             train_fitness = best_fitness
 
             train_delta = None
@@ -630,6 +901,10 @@ class EOH:
                 "train_delta": self._to_float_or_none(train_delta),
                 "overfit_risk": bool(last_overfit_risk),
                 "holdout_evaluated": bool(holdout_evaluated),
+                "controller_enabled": bool(self.controller is not None),
+                "parent_mix": active_parent_mix,
+                "prompt_modifiers": active_prompt_modifiers,
+                "op_probs": active_op_probs,
             }
             self._write_run_log(run_record)
 
