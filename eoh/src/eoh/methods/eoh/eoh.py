@@ -71,6 +71,7 @@ class EOH:
         self.route_controller_enabled = bool(getattr(paras, "route_controller_enabled", True))
         self.route_controller_window = max(2, int(getattr(paras, "route_controller_window", 5)))
         self.route_controller_use_llm = bool(getattr(paras, "route_controller_use_llm", True))
+        self.route_controller_use_critic = bool(getattr(paras, "route_controller_use_critic", False))
         self.route_improvement_epsilon = float(getattr(paras, "route_improvement_epsilon", 1e-12))
         self.route_stagnation_k = int(getattr(paras, "route_stagnation_k", 3))
         self.route_invalid_rate_threshold = float(getattr(paras, "route_invalid_rate_threshold", 0.5))
@@ -103,6 +104,7 @@ class EOH:
                 self.llm_model,
                 self.use_local_llm,
                 self.llm_local_url,
+                use_critic_agent=self.route_controller_use_critic,
                 debug_mode=self.debug_mode,
             )
 
@@ -758,6 +760,7 @@ class EOH:
                             "pure_llm_output": bool(critic_debug.get("flags", {}).get("pure_llm_output", False)),
                             "llm_output_patched": bool(critic_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(critic_debug.get("flags", {}).get("fully_fallback", False)),
+                            "skipped": bool(critic_debug.get("flags", {}).get("skipped", False)),
                             "llm_success": bool(critic_debug.get("llm", {}).get("llm_success", False)),
                             "llm_mode": str(critic_debug.get("llm", {}).get("llm_mode", "")),
                             "parse_ok": bool(critic_debug.get("llm", {}).get("parse_ok", False)),
@@ -826,6 +829,7 @@ class EOH:
                             "pure_llm_output": bool(critic_debug.get("flags", {}).get("pure_llm_output", False)),
                             "llm_output_patched": bool(critic_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(critic_debug.get("flags", {}).get("fully_fallback", False)),
+                            "skipped": bool(critic_debug.get("flags", {}).get("skipped", False)),
                         }
                     )
                 else:
@@ -1033,6 +1037,7 @@ class EOH:
                 "overfit_risk": bool(last_overfit_risk),
                 "holdout_evaluated": bool(holdout_evaluated),
                 "controller_enabled": bool(self.controller is not None),
+                "controller_use_critic": bool(self.route_controller_use_critic),
                 "parent_mix": active_parent_mix,
                 "prompt_modifiers": active_prompt_modifiers,
                 "op_probs": active_op_probs,
@@ -1051,6 +1056,7 @@ class EOH:
                 "critic_fully_fallback": bool(critic_stage_flags.get("fully_fallback", False)),
                 "critic_llm_patched": bool(critic_stage_flags.get("llm_output_patched", False)),
                 "critic_pure_llm": bool(critic_stage_flags.get("pure_llm_output", False)),
+                "critic_skipped": bool(critic_stage_flags.get("skipped", False)),
                 "critic_llm_success": bool(critic_debug.get("llm", {}).get("llm_success", False)) if self.mode == "routed" and self.controller is not None else False,
                 "critic_parse_ok": bool(critic_debug.get("llm", {}).get("parse_ok", False)) if self.mode == "routed" and self.controller is not None else False,
                 "critic_validation_ok": bool(critic_debug.get("llm", {}).get("validation_ok", False)) if self.mode == "routed" and self.controller is not None else False,

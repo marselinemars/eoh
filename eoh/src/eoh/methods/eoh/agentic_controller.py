@@ -38,8 +38,38 @@ Maximize search efficiency and final best fitness by adapting operator usage ove
 """
 
 
-DIAGNOSER_PROMPT_TEMPLATE = """OUTPUT JSON ONLY. Do NOT include any text outside JSON.
-JSON SCHEMA (EXACT KEYS):
+DIAGNOSER_PROMPT_TEMPLATE = """PROJECT CONTEXT
+You are controlling an Evolution of Heuristics (EOH) system for ONLINE BIN PACKING (bp_online).
+
+- Items arrive sequentially and must be placed immediately into bins of fixed capacity.
+- A heuristic scoring function scores feasible bins and chooses the best bin for each item.
+- Fitness is scalar; LOWER is BETTER.
+- You are NOT generating code. You are diagnosing the search state to help choose which operator to use next.
+
+Available operators in the EOH system:
+- e1: Global Novelty (totally different algorithm)
+- e2: Backbone Variant (new motivated variant based on common backbone)
+- m1: Structural Modification (modify one heuristic structurally)
+- m2: Parameter Tuning (tune weights/constants)
+- m3: Simplification/Generalization (simplify to improve robustness)
+
+INPUT: ObservationPacket JSON
+{OBS_JSON}
+
+TASK
+Infer the search state using ONLY the telemetry in ObservationPacket. Produce:
+- continuous factors in [0,1]
+- labels (short strings)
+- evidence (short bullet-like strings that reference specific telemetry values)
+
+REQUIREMENTS
+- You MUST reference: stagnation_len, improve_rate_k, invalid_rate_k, diversity_score.
+- You MUST reference at least ONE operator stat from op_stats_k.
+- If all mean_delta are near zero, say so explicitly.
+
+STRICT OUTPUT FORMAT (MANDATORY)
+Output JSON only. No markdown. No prose before/after.
+Return ONLY valid JSON with exactly this schema and no extra keys:
 {{
   "summary": "string",
   "factors": {{
@@ -51,24 +81,54 @@ JSON SCHEMA (EXACT KEYS):
     "confidence": 0.0
   }},
   "diagnosis_labels": ["string", "string"],
-  "evidence": ["string", "string"]
+  "evidence": ["string", "string", "string"]
 }}
-VALID EXAMPLE:
-{{"summary":"Stagnation and low diversity.","factors":{{"exploration_need":0.72,"exploitation_need":0.31,"diversity_need":0.68,"invalid_risk":0.12,"overfit_risk":0.26,"confidence":0.83}},"diagnosis_labels":["STAGNATION","LOW_DIVERSITY"],"evidence":["stagnation_len=4 and improve_rate_k=0.0 indicate plateau.","diversity_score=0.30 and invalid_rate_k=0.08 support safe exploration.","Top mean_delta operator is e2 from op_stats_k.e2.mean_delta=0.0024."]}}
-{PROJECT_CONTEXT}
-ROLE: Agent 1 - DIAGNOSER
-Task: infer search state from ObservationPacket.
-Hard constraints:
-- Reference stagnation_len, diversity_score, invalid_rate_k, and top operator by mean_delta in summary/evidence.
-- diagnosis_labels length >= 2 and evidence length >= 2.
-- Do not propose actions/operators.
-ObservationPacket:
-{OBS_JSON}
 """
 
 
-PLANNER_PROMPT_TEMPLATE = """OUTPUT JSON ONLY. Do NOT include any text outside JSON.
-JSON SCHEMA (EXACT KEYS):
+PLANNER_PROMPT_TEMPLATE = """PROJECT CONTEXT
+You are Agent 2 (Planner) controlling an Evolution of Heuristics (EOH) search for ONLINE BIN PACKING.
+
+Goal: choose how the next generation should be generated.
+
+You must output an ActionPlan that defines:
+- op_probs: probabilities over operators {{e1,e2,m1,m2,m3}}
+- parent_mix: how to choose parents {{elite, diverse, random}}
+- prompt_modifiers: short constraints to append to the existing EOH generator prompt
+- evaluation_plan: typically keep instances constant
+
+Available operators:
+- e1 (Global Novelty): risky big exploration
+- e2 (Backbone Variant): structured exploration, often productive
+- m1 (Structural Modification): medium exploration
+- m2 (Parameter Tuning): exploitation
+- m3 (Simplification): reduce complexity/overfit
+
+INPUTS
+DiagnosisOutput JSON:
+{DIAG_JSON}
+
+ObservationPacket JSON:
+{OBS_JSON}
+
+TASK
+Create a generation plan grounded in telemetry and diagnosis factors.
+
+NON-NEGOTIABLE RULES
+1) op_probs must sum to 1.0
+2) parent_mix must sum to 1.0
+3) op_probs MUST be non-uniform: max(op_probs)-min(op_probs) >= 0.20
+4) Use operator stats: prefer higher mean_delta/success_rate, penalize high invalid_rate.
+5) If stagnation_len or exploration_need is high: emphasize e2 and possibly m1, not e1 by default.
+6) If exploitation_need is high: emphasize m2 (and possibly m3).
+7) If invalid_risk is high: reduce e1 and m1; favor m2/m3/e2.
+
+PROMPT MODIFIERS
+Provide 1-3 short constraints that will be appended to the code-generation prompt.
+
+STRICT OUTPUT FORMAT (MANDATORY)
+Output JSON only. No markdown. No prose before/after.
+Return ONLY valid JSON with exactly this schema and no extra keys:
 {{
   "diagnosis_used": "string",
   "op_probs": {{"e1": 0.0, "e2": 0.0, "m1": 0.0, "m2": 0.0, "m3": 0.0}},
@@ -77,21 +137,10 @@ JSON SCHEMA (EXACT KEYS):
   "evaluation_plan": {{"instances": 0, "holdout_instances": 0}},
   "rationale": ["string", "string"]
 }}
-VALID EXAMPLE:
-{{"diagnosis_used":"Stagnation with low invalid risk.","op_probs":{{"e1":0.02,"e2":0.56,"m1":0.16,"m2":0.18,"m3":0.08}},"parent_mix":{{"elite":0.48,"diverse":0.32,"random":0.20}},"prompt_modifiers":["Keep scoring function simple.","Avoid many new constants."],"evaluation_plan":{{"instances":256,"holdout_instances":0}},"rationale":["stagnation_len=4 and improve_rate_k=0.0 justify structured exploration.","op_stats_k.e2.mean_delta is highest while invalid_rate_k remains low."]}}
-{PROJECT_CONTEXT}
-ROLE: Agent 2 - PLANNER
-Task: build next-generation action plan from DiagnosisOutput + ObservationPacket.
-Hard constraints:
-- op_probs and parent_mix each sum to exactly 1.0.
-- Uniform op_probs are banned; require spread >= 0.15.
-- Largest op_probs entry must be highest recent mean_delta operator unless invalid_rate > 0.40.
-- rationale must cite at least two telemetry fields.
-- prompt_modifiers size 1-4.
-DiagnosisOutput:
-{DIAG_JSON}
-ObservationPacket:
-{OBS_JSON}
+
+RATIONALE REQUIREMENTS
+- rationale must have at least 2 lines.
+- Each rationale line must cite at least one ObservationPacket field explicitly.
 """
 
 
@@ -250,9 +299,11 @@ class AgenticController:
         model_llm,
         llm_use_local,
         llm_local_url,
+        use_critic_agent=False,
         debug_mode=False,
     ):
         self.debug_mode = bool(debug_mode)
+        self.use_critic_agent = bool(use_critic_agent)
         self.interface_llm = InterfaceLLM(
             api_endpoint,
             api_key,
@@ -339,11 +390,11 @@ class AgenticController:
         evidence = obj.get("evidence")
         if not isinstance(evidence, list):
             errors.append("evidence must be list")
-        elif len(evidence) < 2:
-            errors.append("evidence must contain at least 2 items")
+        elif len(evidence) < 3:
+            errors.append("evidence must contain at least 3 items")
 
         text = (str(obj.get("summary", "")) + " " + " ".join(str(x) for x in (evidence if isinstance(evidence, list) else []))).lower()
-        for field_name in ["stagnation_len", "diversity_score", "invalid_rate_k"]:
+        for field_name in ["stagnation_len", "improve_rate_k", "diversity_score", "invalid_rate_k"]:
             if field_name.lower() not in text:
                 errors.append(f"missing telemetry reference: {field_name}")
 
@@ -378,8 +429,8 @@ class AgenticController:
                     vals.append(v)
             if not _sum_close_to_one(vals):
                 errors.append("op_probs must sum to 1")
-            if max(vals) - min(vals) < 0.15:
-                errors.append("op_probs must be non-uniform (spread >= 0.15)")
+            if max(vals) - min(vals) < 0.20:
+                errors.append("op_probs must be non-uniform (spread >= 0.20)")
 
             preferred = self._best_valid_operator_by_delta(observation)
             if preferred is not None:
@@ -409,8 +460,8 @@ class AgenticController:
         prompt_modifiers = obj.get("prompt_modifiers")
         if not isinstance(prompt_modifiers, list) or len(prompt_modifiers) == 0:
             errors.append("prompt_modifiers must be non-empty list")
-        elif len(prompt_modifiers) > 4:
-            errors.append("prompt_modifiers max length is 4")
+        elif len(prompt_modifiers) > 3:
+            errors.append("prompt_modifiers max length is 3")
 
         evaluation_plan = obj.get("evaluation_plan")
         if not isinstance(evaluation_plan, dict):
@@ -450,15 +501,11 @@ class AgenticController:
             cited = sum(1 for token in citation_tokens if token in text)
             if cited < 2:
                 errors.append("rationale must cite at least 2 telemetry fields")
+            for idx, line in enumerate(rationale):
+                line_text = str(line).lower()
+                if not any(token in line_text for token in citation_tokens):
+                    errors.append(f"rationale line {idx} must cite at least one telemetry field")
 
-        invalid_risk = _to_float((diagnosis.get("factors", {}) if isinstance(diagnosis, dict) else {}).get("invalid_risk"), None)
-        if invalid_risk is not None and invalid_risk >= 0.70 and isinstance(op_probs, dict):
-            e1 = _to_float(op_probs.get("e1"), 0.0)
-            m1 = _to_float(op_probs.get("m1"), 1.0)
-            if e1 > 1e-6:
-                errors.append("invalid_risk>=0.7 requires e1=0")
-            if m1 > 0.15:
-                errors.append("invalid_risk>=0.7 requires small m1")
         return errors
 
     def _validate_critic_output(self, obj, _planner_output, _diagnosis, _observation):
@@ -754,7 +801,7 @@ class AgenticController:
             fallback = self._fallback_diagnosis(observation)
             out["diagnosis_labels"] = fallback["diagnosis_labels"]
             patches.append("diagnosis_labels_too_short")
-        if len(out["evidence"]) < 2:
+        if len(out["evidence"]) < 3:
             fallback = self._fallback_diagnosis(observation)
             out["evidence"] = fallback["evidence"]
             patches.append("evidence_too_short")
@@ -784,7 +831,7 @@ class AgenticController:
         parent_mix_out = _normalize_prob_dict(parent_mix, ["elite", "diverse", "random"])
 
         vals = [op_probs_out[k] for k in ["e1", "e2", "m1", "m2", "m3"]]
-        if (max(vals) - min(vals)) < 0.15:
+        if (max(vals) - min(vals)) < 0.20:
             fallback = self._fallback_plan(diagnosis, observation)
             op_probs_out = _normalize_prob_dict(fallback["op_probs"], ["e1", "e2", "m1", "m2", "m3"])
             patches.append("uniform_op_probs_replaced")
@@ -793,7 +840,7 @@ class AgenticController:
         if not isinstance(prompt_modifiers, list):
             prompt_modifiers = []
             patches.append("prompt_modifiers_not_list")
-        prompt_modifiers = [str(x).strip() for x in prompt_modifiers if str(x).strip()][:4]
+        prompt_modifiers = [str(x).strip() for x in prompt_modifiers if str(x).strip()][:3]
         if len(prompt_modifiers) == 0:
             prompt_modifiers = ["Keep scoring function simple; avoid deep nesting."]
             patches.append("prompt_modifiers_empty_defaulted")
@@ -896,7 +943,7 @@ class AgenticController:
         final_plan = {
             "op_probs": op_probs,
             "parent_mix": parent_mix,
-            "prompt_modifiers": plan.get("prompt_modifiers", [])[:4],
+            "prompt_modifiers": plan.get("prompt_modifiers", [])[:3],
             "evaluation_plan": {
                 "instances": instances,
                 "holdout_instances": holdout_instances,
@@ -917,6 +964,7 @@ class AgenticController:
             "pure_llm_output": pure_llm,
             "llm_output_patched": llm_patched,
             "fully_fallback": fully_fallback,
+            "skipped": False,
         }
 
     def run(self, observation):
@@ -949,43 +997,71 @@ class AgenticController:
         )
         planner_output, planner_sanitize_meta = self._sanitize_plan(planner_raw, diagnosis, observation)
         planner_flags = self._classify_stage(planner_llm_meta, planner_sanitize_meta)
-
-        critic_prompt = self._build_prompt(
-            CRITIC_PROMPT_TEMPLATE,
-            PLAN_JSON=json.dumps(planner_output, ensure_ascii=True),
-            DIAG_JSON=json.dumps(diagnosis, ensure_ascii=True),
-            OBS_JSON=observation_json,
-        )
-        critic_raw, critic_llm_meta = self.call_llm_json(
-            prompt=critic_prompt,
-            schema_name="critic",
-            validator=lambda obj: self._validate_critic_output(obj, planner_output, diagnosis, observation),
-            corrective_schema_hint='{"verdict":"approve|revise","reasons":[...],"final_plan":{"op_probs":{...},"parent_mix":{...}}}',
-            mode="json",
-            tool_name="critic_plan",
-        )
-        if not isinstance(critic_raw, dict):
-            critic_raw = {"verdict": "revise", "reasons": ["critic_fallback_non_dict"], "final_plan": planner_output}
-        verdict, reasons, final_plan, critic_guardrail_meta = self._ensure_guardrails(
-            critic_raw.get("final_plan", {}),
-            diagnosis,
-            observation,
-        )
-        critic_output = {
-            "verdict": str(critic_raw.get("verdict", verdict)).lower() if str(critic_raw.get("verdict", verdict)).lower() in ["approve", "revise"] else verdict,
-            "reasons": [str(x) for x in (critic_raw.get("reasons", []) if isinstance(critic_raw.get("reasons"), list) else [])][:10],
-            "final_plan": final_plan,
-        }
-        for r in reasons:
-            if r not in critic_output["reasons"]:
-                critic_output["reasons"].append(r)
-        critic_output["reasons"] = critic_output["reasons"][:12]
-        critic_sanitize_meta = {
-            "fallback_used": False,
-            "patched": bool(critic_guardrail_meta.get("guardrails_applied", False)),
-            "patches": critic_guardrail_meta.get("guardrail_reasons", []),
-        }
-        critic_flags = self._classify_stage(critic_llm_meta, critic_sanitize_meta)
+        if self.use_critic_agent:
+            critic_prompt = self._build_prompt(
+                CRITIC_PROMPT_TEMPLATE,
+                PLAN_JSON=json.dumps(planner_output, ensure_ascii=True),
+                DIAG_JSON=json.dumps(diagnosis, ensure_ascii=True),
+                OBS_JSON=observation_json,
+            )
+            critic_raw, critic_llm_meta = self.call_llm_json(
+                prompt=critic_prompt,
+                schema_name="critic",
+                validator=lambda obj: self._validate_critic_output(obj, planner_output, diagnosis, observation),
+                corrective_schema_hint='{"verdict":"approve|revise","reasons":[...],"final_plan":{"op_probs":{...},"parent_mix":{...}}}',
+                mode="json",
+                tool_name="critic_plan",
+            )
+            if not isinstance(critic_raw, dict):
+                critic_raw = {"verdict": "revise", "reasons": ["critic_fallback_non_dict"], "final_plan": planner_output}
+            verdict, reasons, final_plan, critic_guardrail_meta = self._ensure_guardrails(
+                critic_raw.get("final_plan", {}),
+                diagnosis,
+                observation,
+            )
+            critic_output = {
+                "verdict": str(critic_raw.get("verdict", verdict)).lower() if str(critic_raw.get("verdict", verdict)).lower() in ["approve", "revise"] else verdict,
+                "reasons": [str(x) for x in (critic_raw.get("reasons", []) if isinstance(critic_raw.get("reasons"), list) else [])][:10],
+                "final_plan": final_plan,
+            }
+            for r in reasons:
+                if r not in critic_output["reasons"]:
+                    critic_output["reasons"].append(r)
+            critic_output["reasons"] = critic_output["reasons"][:12]
+            critic_sanitize_meta = {
+                "fallback_used": False,
+                "patched": bool(critic_guardrail_meta.get("guardrails_applied", False)),
+                "patches": critic_guardrail_meta.get("guardrail_reasons", []),
+            }
+            critic_flags = self._classify_stage(critic_llm_meta, critic_sanitize_meta)
+        else:
+            critic_guardrail_meta = {
+                "sanitize_meta": {"fallback_used": False, "patched": False, "patches": []},
+                "guardrail_reasons": [],
+                "guardrails_applied": False,
+                "skipped": True,
+            }
+            critic_llm_meta = {
+                "success": False,
+                "llm_success": False,
+                "schema": "critic",
+                "llm_mode": "disabled",
+                "attempts": [],
+                "retries_used": 0,
+                "repair_used": False,
+                "parse_ok": False,
+                "validation_ok": False,
+                "failure_reason": "critic_disabled",
+                "last_errors": [],
+                "skipped": True,
+            }
+            critic_sanitize_meta = {"fallback_used": False, "patched": False, "patches": []}
+            critic_flags = {"pure_llm_output": False, "llm_output_patched": False, "fully_fallback": False, "skipped": True}
+            critic_output = {
+                "verdict": "skipped",
+                "reasons": ["critic_disabled_llm_only_controller"],
+                "final_plan": planner_output,
+            }
 
         result = {
             "time": self._now(),

@@ -67,6 +67,7 @@ def parse_args():
     parser.add_argument("--model", default=os.getenv("EOH_LLM_MODEL", "xxx"))
     parser.add_argument("--use-local", action="store_true", default=os.getenv("EOH_LLM_USE_LOCAL", "1") == "1")
     parser.add_argument("--local-url", default=os.getenv("EOH_LLM_LOCAL_URL", "http://127.0.0.1:18000/completions"))
+    parser.add_argument("--use-critic", action="store_true", help="Enable Critic stage in controller.")
     parser.add_argument("--mock", action="store_true", help="Use mock LLM responses (offline sanity).")
     parser.add_argument("--mock-invalid-rate", type=float, default=0.05)
     parser.add_argument("--output", default="compare_runs/controller_json_dry_test_summary.json")
@@ -83,7 +84,7 @@ class MockLLM:
     def get_response(self, prompt_content, request_mode="code", tool_name=None, json_schema=None, stop=None):
         if self._maybe_invalid():
             return "invalid json text"
-        if isinstance(prompt_content, str) and "ROLE: Agent 1 - DIAGNOSER" in prompt_content:
+        if isinstance(prompt_content, str) and "Infer the search state using ONLY the telemetry" in prompt_content:
             return json.dumps(
                 {
                     "summary": "stagnation_len high with low diversity_score.",
@@ -103,7 +104,7 @@ class MockLLM:
                     ],
                 }
             )
-        if isinstance(prompt_content, str) and "ROLE: Agent 2 - PLANNER" in prompt_content:
+        if isinstance(prompt_content, str) and "Create a generation plan grounded in telemetry" in prompt_content:
             return json.dumps(
                 {
                     "diagnosis_used": "stagnation with low invalid risk",
@@ -139,6 +140,7 @@ def main():
     if args.mock:
         controller = object.__new__(AgenticController)
         controller.debug_mode = False
+        controller.use_critic_agent = bool(args.use_critic)
         controller.max_json_retries = max(1, int(os.getenv("EOH_CONTROLLER_JSON_RETRIES", "3")))
         controller.interface_llm = MockLLM(invalid_rate=args.mock_invalid_rate)
     else:
@@ -148,14 +150,18 @@ def main():
             model_llm=args.model,
             llm_use_local=bool(args.use_local),
             llm_local_url=args.local_url,
+            use_critic_agent=bool(args.use_critic),
             debug_mode=False,
         )
 
     stats = {
         "diagnoser": {"ok": 0, "llm_success": 0, "fallback": 0},
         "planner": {"ok": 0, "llm_success": 0, "fallback": 0},
-        "critic": {"ok": 0, "llm_success": 0, "fallback": 0},
     }
+    stage_order = [("diagnoser", "diagnoser"), ("planner", "planner")]
+    if args.use_critic:
+        stats["critic"] = {"ok": 0, "llm_success": 0, "fallback": 0}
+        stage_order.append(("critic", "critic"))
     failures = []
 
     for i in range(max(1, int(args.iters))):
@@ -166,7 +172,7 @@ def main():
             failures.append({"iter": i + 1, "error": str(exc)})
             continue
 
-        for stage_key, stage_name in [("diagnoser", "diagnoser"), ("planner", "planner"), ("critic", "critic")]:
+        for stage_key, stage_name in stage_order:
             dbg = out.get("debug", {}).get(stage_key, {})
             llm = dbg.get("llm", {}) if isinstance(dbg, dict) else {}
             flags = dbg.get("flags", {}) if isinstance(dbg, dict) else {}
@@ -183,7 +189,7 @@ def main():
         "failures": failures,
     }
     overall_pass = True
-    for stage in ["diagnoser", "planner", "critic"]:
+    for stage in [stage for _, stage in stage_order]:
         ok_rate = stats[stage]["ok"] / float(total)
         llm_success_rate = stats[stage]["llm_success"] / float(total)
         fallback_rate = stats[stage]["fallback"] / float(total)

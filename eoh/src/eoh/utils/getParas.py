@@ -56,6 +56,7 @@ class Paras():
         self.route_controller_enabled = True
         self.route_controller_window = 5
         self.route_controller_use_llm = True
+        self.route_controller_use_critic = False
         self.route_improvement_epsilon = 1e-12
         self.route_stagnation_k = 3
         self.route_invalid_rate_threshold = 0.5
