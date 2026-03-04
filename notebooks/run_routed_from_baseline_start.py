@@ -68,6 +68,45 @@ def _code_hash(code: str):
     return hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
 
 
+def _extract_shared_seed_items(pop0_path: Path):
+    with pop0_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        return []
+    seeds = []
+    for ind in data:
+        if not isinstance(ind, dict):
+            continue
+        code = ind.get("code")
+        algorithm = ind.get("algorithm")
+        if isinstance(code, str) and isinstance(algorithm, str):
+            seeds.append({"algorithm": algorithm, "code": code})
+    return seeds
+
+
+def _try_rebuild_shared_seed(seed_root: Path, shared_seed: Path, log):
+    candidates = [
+        seed_root / "_shared_seed_build" / "results" / "pops" / "population_generation_0.json",
+        seed_root / "baseline" / "results" / "pops_full" / "population_generation_0.json",
+    ]
+    for pop0_path in candidates:
+        if not pop0_path.exists():
+            continue
+        seeds = _extract_shared_seed_items(pop0_path)
+        if len(seeds) == 0:
+            continue
+        with shared_seed.open("w", encoding="utf-8") as f:
+            json.dump(seeds, f, indent=2)
+        log(
+            "rebuilt shared seed file from local artifact",
+            shared_seed_path=str(shared_seed),
+            source_path=str(pop0_path),
+            seed_count=len(seeds),
+        )
+        return True
+    return False
+
+
 def _build_continue_population(seed_root: Path, log):
     baseline_pop0 = seed_root / "baseline" / "results" / "pops" / "population_generation_0.json"
     shared_seed = seed_root / "shared_initial_population.json"
@@ -87,6 +126,16 @@ def _build_continue_population(seed_root: Path, log):
             json.dump(baseline_data, f, indent=2)
         log("continue population built from full baseline pop0", continue_path=str(continue_pop))
         return continue_pop
+
+    if not shared_seed.exists():
+        rebuilt = _try_rebuild_shared_seed(seed_root, shared_seed, log)
+        if rebuilt:
+            pass
+        else:
+            raise RuntimeError(
+                "Baseline pop0 is compact (no code) and shared seed file is missing: "
+                f"{shared_seed}. Also could not rebuild from _shared_seed_build."
+            )
 
     if not shared_seed.exists():
         raise RuntimeError(
