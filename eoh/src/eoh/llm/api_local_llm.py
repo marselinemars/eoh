@@ -30,13 +30,28 @@ class InterfaceLocalLLM:
                 time.sleep(self._retry_sleep_s)
                 continue
 
+    def _is_controller_json_prompt(self, content: str) -> bool:
+        if not isinstance(content, str):
+            return False
+        markers = [
+            "ROLE: Agent 1 - DIAGNOSER",
+            "ROLE: Agent 2 - PLANNER",
+            "ROLE: Agent 3 - CRITIC / SAFETY",
+            "Return ONLY valid JSON",
+            "\"op_probs\"",
+            "\"diagnosis_labels\"",
+        ]
+        return any(marker in content for marker in markers)
+
     def _do_request(self, content: str) -> str:
         content = content.strip('\n').strip()
+        response_mode = "json" if self._is_controller_json_prompt(content) else "code"
         # repeat the prompt for batch inference (inorder to decease the sample delay)
         data = {
             'prompt': content,
             'repeat_prompt': 1,
             'params': {
+                'eoh_response_mode': response_mode,
                 'do_sample': self._do_sample,
                 'temperature': self._temperature,
                 'top_k': None,

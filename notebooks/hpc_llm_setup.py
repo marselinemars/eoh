@@ -17,6 +17,10 @@ DEFAULT_BRIDGE_SYSTEM_MESSAGE = (
     "Return ONLY: (1) one short algorithm sentence in {...} and (2) valid Python code. "
     "No reasoning, no thinking process, no markdown fences, no extra commentary."
 )
+DEFAULT_BRIDGE_JSON_SYSTEM_MESSAGE = (
+    "You are a JSON generator. Output ONLY valid JSON object matching the user schema. "
+    "No markdown, no prose, no code fences."
+)
 
 
 @dataclass
@@ -90,6 +94,8 @@ def resolve_model_id(cfg: HPCBridgeConfig, timeout_s: int = 60) -> str:
 def _make_handler(base_url: str, api_key: str, model_id: str):
     bridge_max_tokens = int(os.getenv("EOH_BRIDGE_MAX_TOKENS", "1200"))
     bridge_system_message = os.getenv("EOH_BRIDGE_SYSTEM_MESSAGE", DEFAULT_BRIDGE_SYSTEM_MESSAGE)
+    bridge_json_system_message = os.getenv("EOH_BRIDGE_JSON_SYSTEM_MESSAGE", DEFAULT_BRIDGE_JSON_SYSTEM_MESSAGE)
+    bridge_json_response_format = os.getenv("EOH_BRIDGE_JSON_RESPONSE_FORMAT", "1") == "1"
     disable_thinking = os.getenv("EOH_BRIDGE_DISABLE_THINKING", "1") == "1"
     repair_retries = int(os.getenv("EOH_BRIDGE_REPAIR_RETRIES", "1"))
 
@@ -145,6 +151,66 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
             parts.append(code)
             return "\n".join(parts).strip()
 
+        def _is_json_mode_request(self, prompt: str, params: dict):
+            mode = str(params.get("eoh_response_mode", "")).strip().lower()
+            if mode == "json":
+                return True
+            markers = [
+                "ROLE: Agent 1 - DIAGNOSER",
+                "ROLE: Agent 2 - PLANNER",
+                "ROLE: Agent 3 - CRITIC / SAFETY",
+                "Return ONLY valid JSON",
+                "\"op_probs\"",
+                "\"diagnosis_labels\"",
+            ]
+            return any(m in (prompt or "") for m in markers)
+
+        def _extract_json_object(self, text: str):
+            if not isinstance(text, str):
+                return ""
+            t = text.strip()
+            if not t:
+                return ""
+            try:
+                obj = json.loads(t)
+                if isinstance(obj, dict):
+                    return json.dumps(obj, ensure_ascii=False)
+            except Exception:
+                pass
+
+            depth = 0
+            start = None
+            in_string = False
+            escape = False
+            for i, ch in enumerate(t):
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+                if ch == '"':
+                    in_string = True
+                    continue
+                if ch == "{":
+                    if depth == 0:
+                        start = i
+                    depth += 1
+                elif ch == "}":
+                    if depth > 0:
+                        depth -= 1
+                        if depth == 0 and start is not None:
+                            cand = t[start : i + 1]
+                            try:
+                                obj = json.loads(cand)
+                                if isinstance(obj, dict):
+                                    return json.dumps(obj, ensure_ascii=False)
+                            except Exception:
+                                continue
+            return t
+
         def do_POST(self):
             if self.path != "/completions":
                 self._send(404, {"error": "not found"})
@@ -161,6 +227,8 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                 max_new_tokens = params.get("max_new_tokens", bridge_max_tokens)
                 if max_new_tokens is None:
                     max_new_tokens = bridge_max_tokens
+                json_mode = self._is_json_mode_request(prompt, params)
+                system_message = bridge_json_system_message if json_mode else bridge_system_message
 
                 headers = {
                     "Content-Type": "application/json",
@@ -169,9 +237,9 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                     headers["Authorization"] = f"Bearer {api_key}"
 
                 messages = [{"role": "user", "content": prompt}]
-                if bridge_system_message:
+                if system_message:
                     messages = [
-                        {"role": "system", "content": bridge_system_message},
+                        {"role": "system", "content": system_message},
                         {"role": "user", "content": prompt},
                     ]
 
@@ -181,22 +249,28 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                     "temperature": temperature,
                     "max_tokens": max_new_tokens,
                 }
+                if json_mode and bridge_json_response_format:
+                    chat_payload["response_format"] = {"type": "json_object"}
                 if disable_thinking:
                     # Some Qwen/vLLM deployments accept one of these flags.
                     # Unknown keys are typically ignored by compliant servers.
                     chat_payload["thinking"] = False
                     chat_payload["chat_template_kwargs"] = {"enable_thinking": False}
                     chat_payload["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-                r = requests.post(
-                    f"{base_url}/chat/completions",
-                    headers=headers,
-                    json=chat_payload,
-                    timeout=600,
-                )
+                r = requests.post(f"{base_url}/chat/completions", headers=headers, json=chat_payload, timeout=600)
+                if r.status_code != 200 and json_mode and "response_format" in chat_payload:
+                    # Fallback for servers that do not support response_format.
+                    chat_payload.pop("response_format", None)
+                    r = requests.post(f"{base_url}/chat/completions", headers=headers, json=chat_payload, timeout=600)
                 if r.status_code == 200:
                     data = r.json()
                     text = data.get("choices", [{}])[0].get("message", {}).get("content")
                     if isinstance(text, str) and text:
+                        if json_mode:
+                            text = self._extract_json_object(text)
+                            self._send(200, {"content": [text]})
+                            return
+
                         text = self._sanitize_to_final(text)
                         if not self._looks_valid_final(text):
                             for _ in range(repair_retries):
@@ -210,7 +284,7 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                                 repair_payload = {
                                     "model": model_id,
                                     "messages": [
-                                        {"role": "system", "content": bridge_system_message},
+                                        {"role": "system", "content": system_message},
                                         {"role": "user", "content": repair_prompt},
                                     ],
                                     "temperature": 0.0,
@@ -236,9 +310,9 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
 
                 # fallback to completion-style endpoint if chat path is unavailable
                 completion_prompt = prompt
-                if bridge_system_message:
+                if system_message:
                     completion_prompt = (
-                        f"System: {bridge_system_message}\n\n"
+                        f"System: {system_message}\n\n"
                         f"User: {prompt}\n\n"
                         "Assistant:"
                     )
@@ -271,7 +345,10 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
 
                 data2 = r2.json()
                 text2 = data2.get("choices", [{}])[0].get("text", "")
-                text2 = self._sanitize_to_final(text2)
+                if json_mode:
+                    text2 = self._extract_json_object(text2)
+                else:
+                    text2 = self._sanitize_to_final(text2)
                 self._send(200, {"content": [text2]})
             except Exception as exc:
                 self._send(500, {"error": str(exc)})
