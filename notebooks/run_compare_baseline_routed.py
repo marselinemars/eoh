@@ -164,7 +164,98 @@ def _heartbeat(
         time.sleep(20)
 
 
-def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settings: dict, log, run_tag: str):
+def _prepare_shared_seed(seed_root: Path, bridge_url: str, model_id: str, settings: dict, log, run_tag: str):
+    from eoh import eoh
+    from eoh.utils.getParas import Paras
+
+    seed_build_out = seed_root / "_shared_seed_build"
+    shared_seed_path = seed_root / "shared_initial_population.json"
+    seed_build_out.mkdir(parents=True, exist_ok=True)
+
+    random.seed(settings["seed"])
+    np.random.seed(settings["seed"])
+
+    log(
+        f"{run_tag} preparing shared initial population",
+        run_tag=run_tag,
+        event="shared_seed_prepare_start",
+        seed_build_out=str(seed_build_out),
+        shared_seed_path=str(shared_seed_path),
+    )
+
+    paras = Paras()
+    paras.set_paras(
+        method="eoh",
+        problem=settings["problem"],
+        llm_use_local=True,
+        llm_local_url=bridge_url,
+        llm_model=model_id,
+        ec_pop_size=settings["pop_size"],
+        ec_n_pop=0,
+        exp_n_proc=settings["n_proc"],
+        exp_output_path=str(seed_build_out),
+        exp_debug_mode=False,
+        eval_instances_per_gen=settings["eval_instances_per_gen"],
+        holdout_instances=settings["holdout_instances"],
+        holdout_eval_interval=settings["holdout_eval_interval"],
+        route_improvement_epsilon=settings["route_improvement_epsilon"],
+        route_warmup_gens=settings["route_warmup_gens"],
+        route_e1_cooldown=settings["route_e1_cooldown"],
+        route_e2_recent_k=settings["route_e2_recent_k"],
+        route_use_probabilistic=settings["route_use_probabilistic"],
+        eoh_mode="baseline",
+        log_full_population=True,
+    )
+    if settings.get("disable_numba", False):
+        paras.eva_numba_decorator = False
+
+    runner = eoh.EVOL(paras)
+    runner.run()
+
+    pop0_path = seed_build_out / "results" / "pops" / "population_generation_0.json"
+    if not pop0_path.exists():
+        raise RuntimeError(f"Shared-seed build failed: missing {pop0_path}")
+
+    with pop0_path.open("r", encoding="utf-8") as f:
+        pop0 = json.load(f)
+    if not isinstance(pop0, list):
+        raise RuntimeError("Shared-seed build failed: population_generation_0.json is not a list.")
+
+    seeds = []
+    for ind in pop0:
+        if not isinstance(ind, dict):
+            continue
+        code = ind.get("code")
+        algorithm = ind.get("algorithm")
+        if isinstance(code, str) and isinstance(algorithm, str):
+            seeds.append({"algorithm": algorithm, "code": code})
+
+    if len(seeds) == 0:
+        raise RuntimeError("Shared-seed build failed: no valid seed algorithms found.")
+
+    with shared_seed_path.open("w", encoding="utf-8") as f:
+        json.dump(seeds, f, indent=2)
+
+    log(
+        f"{run_tag} shared initial population ready",
+        run_tag=run_tag,
+        event="shared_seed_prepare_done",
+        shared_seed_path=str(shared_seed_path),
+        seed_count=len(seeds),
+    )
+    return shared_seed_path
+
+
+def run_once(
+    mode: str,
+    output_path: str,
+    bridge_url: str,
+    model_id: str,
+    settings: dict,
+    log,
+    run_tag: str,
+    shared_seed_path: Path | None = None,
+):
     from eoh import eoh
     from eoh.utils.getParas import Paras
 
@@ -201,6 +292,7 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
         run_tag=run_tag,
         mode=mode,
         output_path=str(mode_root),
+        shared_seed_path=str(shared_seed_path) if shared_seed_path else None,
         run_log_path=str(run_log_path),
         operator_log_path=str(operator_log_path),
         population0_path=str(pop0_path),
@@ -252,6 +344,8 @@ def run_once(mode: str, output_path: str, bridge_url: str, model_id: str, settin
             route_e1_cooldown=settings["route_e1_cooldown"],
             route_e2_recent_k=settings["route_e2_recent_k"],
             route_use_probabilistic=settings["route_use_probabilistic"],
+            exp_use_seed=bool(shared_seed_path),
+            exp_seed_path=str(shared_seed_path) if shared_seed_path else "./seeds/seeds.json",
             eoh_mode=mode,
             log_full_population=False,
         )
@@ -283,6 +377,7 @@ def main():
         "route_e1_cooldown": int(os.getenv("EOH_ROUTE_E1_COOLDOWN", "3")),
         "route_e2_recent_k": int(os.getenv("EOH_ROUTE_E2_RECENT_K", "3")),
         "route_use_probabilistic": os.getenv("EOH_ROUTE_USE_PROBABILISTIC", "1") == "1",
+        "share_initial_population": os.getenv("EOH_SHARE_INITIAL_POP", "1") == "1",
         "disable_numba": os.getenv("EOH_DISABLE_NUMBA", "1") == "1",
         "log_llm_io": os.getenv("EOH_LOG_LLM_IO", "1") == "1",
     }
@@ -336,7 +431,20 @@ def main():
                 routed_out=routed_out,
             )
 
-            run_once("baseline", baseline_out, bridge_url, model_id, seed_settings, log, run_tag)
+            shared_seed_path = None
+            if seed_settings.get("share_initial_population", True):
+                shared_seed_path = _prepare_shared_seed(seed_root, bridge_url, model_id, seed_settings, log, run_tag)
+
+            run_once(
+                "baseline",
+                baseline_out,
+                bridge_url,
+                model_id,
+                seed_settings,
+                log,
+                run_tag,
+                shared_seed_path=shared_seed_path,
+            )
             log(
                 f"{run_tag} baseline run log path",
                 run_tag=run_tag,
@@ -348,7 +456,16 @@ def main():
                 path=str(Path(baseline_out) / "results" / "operator_events.jsonl"),
             )
 
-            run_once("routed", routed_out, bridge_url, model_id, seed_settings, log, run_tag)
+            run_once(
+                "routed",
+                routed_out,
+                bridge_url,
+                model_id,
+                seed_settings,
+                log,
+                run_tag,
+                shared_seed_path=shared_seed_path,
+            )
             log(
                 f"{run_tag} routed run log path",
                 run_tag=run_tag,
