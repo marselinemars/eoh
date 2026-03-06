@@ -11,9 +11,12 @@ import concurrent.futures
 
 def _safe_float(value, default=0.0):
     try:
-        return float(value)
+        out = float(value)
     except (TypeError, ValueError):
         return float(default)
+    if not np.isfinite(out):
+        return float(default)
+    return out
 
 
 def _normalized_entropy(counts):
@@ -97,15 +100,25 @@ class BPONLINE():
 
         for item in items:
             valid_bin_indices = self.get_valid_bin_indices(item, bins)
+            if len(valid_bin_indices) == 0:
+                raise RuntimeError("no feasible bins available for current item")
             feasible_bins = bins[valid_bin_indices]
-            priorities = np.asarray(alg.score(item, feasible_bins), dtype=float).reshape(-1)
+            try:
+                raw_scores = alg.score(item, feasible_bins)
+            except Exception as exc:
+                raise RuntimeError(f"score evaluation failed: {exc}") from exc
+            try:
+                priorities = np.asarray(raw_scores, dtype=float).reshape(-1)
+            except Exception as exc:
+                raise RuntimeError(f"score output is not a finite numeric vector: {exc}") from exc
             if len(priorities) != len(valid_bin_indices):
                 raise RuntimeError("score output length does not match feasible bins")
+            if not np.all(np.isfinite(priorities)):
+                raise RuntimeError("score output contains NaN or infinity")
             best_bin = valid_bin_indices[np.argmax(priorities)]
             if collect_trace:
                 best_local = int(np.argmax(priorities))
                 residual_after = feasible_bins - item
-                chosen_residual = residual_after[best_local]
                 was_new_bin = not used_mask[best_bin]
                 opening_events.append(1.0 if was_new_bin else 0.0)
                 if len(priorities) >= 2:
@@ -224,7 +237,11 @@ class BPONLINE():
             return {"fitness": None, "trace_metrics": {}, "metric_reasons": {}}
 
         avg_num_bins = -np.mean(np.asarray(num_bins_list, dtype=float))
+        if not np.isfinite(avg_num_bins):
+            return {"fitness": None, "trace_metrics": {}, "metric_reasons": {"fitness": "non_finite_avg_num_bins"}}
         fitness = float((avg_num_bins - lb_value) / lb_value)
+        if not np.isfinite(fitness):
+            return {"fitness": None, "trace_metrics": {}, "metric_reasons": {"fitness": "non_finite_fitness"}}
         aggregated_trace = self._mean_metrics(trace_metrics)
 
         if len(results) > 0:

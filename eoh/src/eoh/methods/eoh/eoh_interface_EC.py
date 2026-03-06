@@ -365,13 +365,10 @@ class InterfaceEC():
             )(delayed(self.get_offspring)(pop, operator) for _ in range(n_targets))
         except Exception as e:
             print(f"Parallel offspring generation failed for operator {operator}: {type(e).__name__}: {e}")
-            if self.parallel_fallback_sequential:
-                print("Falling back to sequential offspring generation.")
-                results = []
-                for _ in range(n_targets):
-                    results.append(self.get_offspring(pop, operator))
-            else:
-                print("Parallel time out .")
+            print("Falling back to sequential offspring generation.")
+            results = []
+            for _ in range(n_targets):
+                results.append(self.get_offspring(pop, operator))
             
         time.sleep(2)
 
