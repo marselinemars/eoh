@@ -8,6 +8,7 @@ import concurrent.futures
 
 from .eoh_interface_EC import InterfaceEC
 from .agentic_controller import AgenticController
+from .agentic_full import AgenticFullController
 # main class for eoh
 class EOH:
 
@@ -63,7 +64,7 @@ class EOH:
         self.use_numba = paras.eva_numba_decorator
 
         self.mode = getattr(paras, "eoh_mode", "baseline")
-        if self.mode not in ["baseline", "routed", "agentic"]:
+        if self.mode not in ["baseline", "routed", "agentic", "agentic_full"]:
             print(f"Unknown eoh_mode={self.mode}, fallback to baseline.")
             self.mode = "baseline"
         if self.mode == "agentic":
@@ -94,11 +95,29 @@ class EOH:
         self.llm_diagnoser_raw_log_path = os.path.join(self.output_path, "results", "llm_diagnoser_raw.jsonl")
         self.llm_planner_raw_log_path = os.path.join(self.output_path, "results", "llm_planner_raw.jsonl")
         self.llm_critic_raw_log_path = os.path.join(self.output_path, "results", "llm_critic_raw.jsonl")
+        self.measurement_plan_log_path = os.path.join(self.output_path, "results", "measurement_plan.jsonl")
+        self.behavior_evidence_log_path = os.path.join(self.output_path, "results", "behavior_evidence.jsonl")
+        self.diagnosis_report_log_path = os.path.join(self.output_path, "results", "diagnosis_report.jsonl")
+        self.intervention_portfolio_log_path = os.path.join(self.output_path, "results", "intervention_portfolio.jsonl")
+        self.reflection_report_log_path = os.path.join(self.output_path, "results", "reflection_report.jsonl")
+        self.heuristic_profiles_log_path = os.path.join(self.output_path, "results", "heuristic_profiles.jsonl")
+        self.memory_updates_log_path = os.path.join(self.output_path, "results", "memory_updates.jsonl")
 
         print("- EoH parameters loaded -")
 
         self.controller = None
-        if self.mode == "routed" and self.route_controller_enabled and self.route_controller_use_llm:
+        if self.mode == "agentic_full" and self.route_controller_enabled and self.route_controller_use_llm:
+            self.controller = AgenticFullController(
+                self.api_endpoint,
+                self.api_key,
+                self.llm_model,
+                self.use_local_llm,
+                self.llm_local_url,
+                output_path=self.output_path,
+                use_critic_agent=self.route_controller_use_critic,
+                debug_mode=self.debug_mode,
+            )
+        elif self.mode == "routed" and self.route_controller_enabled and self.route_controller_use_llm:
             self.controller = AgenticController(
                 self.api_endpoint,
                 self.api_key,
@@ -141,6 +160,20 @@ class EOH:
             pass
         with open(self.llm_critic_raw_log_path, "w", encoding="utf-8") as _:
             pass
+        with open(self.measurement_plan_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.behavior_evidence_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.diagnosis_report_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.intervention_portfolio_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.reflection_report_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.heuristic_profiles_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.memory_updates_log_path, "w", encoding="utf-8") as _:
+            pass
 
     def _write_run_log(self, record):
         with open(self.run_log_path, "a", encoding="utf-8") as f:
@@ -176,6 +209,34 @@ class EOH:
 
     def _write_llm_critic_raw_log(self, record):
         with open(self.llm_critic_raw_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_measurement_plan_log(self, record):
+        with open(self.measurement_plan_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_behavior_evidence_log(self, record):
+        with open(self.behavior_evidence_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_diagnosis_report_log(self, record):
+        with open(self.diagnosis_report_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_intervention_portfolio_log(self, record):
+        with open(self.intervention_portfolio_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_reflection_report_log(self, record):
+        with open(self.reflection_report_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_heuristic_profiles_log(self, record):
+        with open(self.heuristic_profiles_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_memory_updates_log(self, record):
+        with open(self.memory_updates_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
     def _code_hash(self, code):
@@ -680,7 +741,7 @@ class EOH:
             plan_debug = {}
             critic_debug = {}
 
-            if self.mode == "routed":
+            if self.mode in ["routed", "agentic_full"]:
                 if self.controller is not None:
                     observation = self._build_observation_packet(
                         generation_index=pop,
@@ -700,10 +761,16 @@ class EOH:
                             "observation": observation,
                         }
                     )
-                    controller_result = self.controller.run(observation)
+                    controller_result = self.controller.run(
+                        observation,
+                        population=population,
+                        interface_prob=interface_prob,
+                        generation_index=pop,
+                    )
                     diagnosis = controller_result["diagnosis"]
                     planner_output = controller_result["planner_output"]
                     critic_output = controller_result["critic_output"]
+                    artifacts = controller_result.get("artifacts", {}) if isinstance(controller_result.get("artifacts", {}), dict) else {}
                     controller_debug = controller_result.get("debug", {})
                     diag_debug = controller_debug.get("diagnoser", {}) if isinstance(controller_debug.get("diagnoser", {}), dict) else {}
                     plan_debug = controller_debug.get("planner", {}) if isinstance(controller_debug.get("planner", {}), dict) else {}
@@ -869,6 +936,57 @@ class EOH:
                             "skipped": bool(critic_debug.get("flags", {}).get("skipped", False)),
                         }
                     )
+                    if len(artifacts) > 0:
+                        if isinstance(artifacts.get("measurement_plan"), dict):
+                            self._write_measurement_plan_log(
+                                {
+                                    "gen": int(pop + 1),
+                                    "mode": self.mode,
+                                    "record": artifacts.get("measurement_plan"),
+                                    "raw_output": controller_result.get("raw", {}).get("measurement_text"),
+                                    "llm_meta": controller_debug.get("measurement_planner", {}).get("llm", {}),
+                                }
+                            )
+                        if isinstance(artifacts.get("behavior_evidence"), dict):
+                            self._write_behavior_evidence_log(
+                                {
+                                    "gen": int(pop + 1),
+                                    "mode": self.mode,
+                                    "record": artifacts.get("behavior_evidence"),
+                                }
+                            )
+                        if isinstance(artifacts.get("diagnosis_report"), dict):
+                            self._write_diagnosis_report_log(
+                                {
+                                    "gen": int(pop + 1),
+                                    "mode": self.mode,
+                                    "record": artifacts.get("diagnosis_report"),
+                                }
+                            )
+                        if isinstance(artifacts.get("intervention_portfolio"), dict):
+                            self._write_intervention_portfolio_log(
+                                {
+                                    "gen": int(pop + 1),
+                                    "mode": self.mode,
+                                    "record": artifacts.get("intervention_portfolio"),
+                                }
+                            )
+                        if isinstance(artifacts.get("heuristic_profiles"), list):
+                            self._write_heuristic_profiles_log(
+                                {
+                                    "gen": int(pop + 1),
+                                    "mode": self.mode,
+                                    "profiles": artifacts.get("heuristic_profiles"),
+                                }
+                            )
+                        if isinstance(artifacts.get("memory_updates"), list) and len(artifacts.get("memory_updates")) > 0:
+                            self._write_memory_updates_log(
+                                {
+                                    "gen": int(pop + 1),
+                                    "mode": self.mode,
+                                    "updates": artifacts.get("memory_updates"),
+                                }
+                            )
                 else:
                     interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None)
                     diagnosis_label = self._diagnose_routed(
@@ -1095,24 +1213,58 @@ class EOH:
                 "diagnoser_fully_fallback": bool(diagnoser_stage_flags.get("fully_fallback", False)),
                 "diagnoser_llm_patched": bool(diagnoser_stage_flags.get("llm_output_patched", False)),
                 "diagnoser_pure_llm": bool(diagnoser_stage_flags.get("pure_llm_output", False)),
-                "diagnoser_llm_success": bool(diag_debug.get("llm", {}).get("llm_success", False)) if self.mode == "routed" and self.controller is not None else False,
-                "diagnoser_parse_ok": bool(diag_debug.get("llm", {}).get("parse_ok", False)) if self.mode == "routed" and self.controller is not None else False,
-                "diagnoser_validation_ok": bool(diag_debug.get("llm", {}).get("validation_ok", False)) if self.mode == "routed" and self.controller is not None else False,
+                "diagnoser_llm_success": bool(diag_debug.get("llm", {}).get("llm_success", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
+                "diagnoser_parse_ok": bool(diag_debug.get("llm", {}).get("parse_ok", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
+                "diagnoser_validation_ok": bool(diag_debug.get("llm", {}).get("validation_ok", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
                 "planner_fully_fallback": bool(planner_stage_flags.get("fully_fallback", False)),
                 "planner_llm_patched": bool(planner_stage_flags.get("llm_output_patched", False)),
                 "planner_pure_llm": bool(planner_stage_flags.get("pure_llm_output", False)),
-                "planner_llm_success": bool(plan_debug.get("llm", {}).get("llm_success", False)) if self.mode == "routed" and self.controller is not None else False,
-                "planner_parse_ok": bool(plan_debug.get("llm", {}).get("parse_ok", False)) if self.mode == "routed" and self.controller is not None else False,
-                "planner_validation_ok": bool(plan_debug.get("llm", {}).get("validation_ok", False)) if self.mode == "routed" and self.controller is not None else False,
+                "planner_llm_success": bool(plan_debug.get("llm", {}).get("llm_success", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
+                "planner_parse_ok": bool(plan_debug.get("llm", {}).get("parse_ok", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
+                "planner_validation_ok": bool(plan_debug.get("llm", {}).get("validation_ok", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
                 "critic_fully_fallback": bool(critic_stage_flags.get("fully_fallback", False)),
                 "critic_llm_patched": bool(critic_stage_flags.get("llm_output_patched", False)),
                 "critic_pure_llm": bool(critic_stage_flags.get("pure_llm_output", False)),
                 "critic_skipped": bool(critic_stage_flags.get("skipped", False)),
-                "critic_llm_success": bool(critic_debug.get("llm", {}).get("llm_success", False)) if self.mode == "routed" and self.controller is not None else False,
-                "critic_parse_ok": bool(critic_debug.get("llm", {}).get("parse_ok", False)) if self.mode == "routed" and self.controller is not None else False,
-                "critic_validation_ok": bool(critic_debug.get("llm", {}).get("validation_ok", False)) if self.mode == "routed" and self.controller is not None else False,
+                "critic_llm_success": bool(critic_debug.get("llm", {}).get("llm_success", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
+                "critic_parse_ok": bool(critic_debug.get("llm", {}).get("parse_ok", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
+                "critic_validation_ok": bool(critic_debug.get("llm", {}).get("validation_ok", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
             }
             self._write_run_log(run_record)
+
+            if self.mode == "agentic_full" and self.controller is not None and hasattr(self.controller, "reflect_generation"):
+                try:
+                    reflection_payload = self.controller.reflect_generation(
+                        generation=int(pop + 1),
+                        outcome_summary={
+                            "gen": int(pop + 1),
+                            "best_fitness": self._to_float_or_none(best_fitness),
+                            "train_delta": self._to_float_or_none(train_delta),
+                            "invalid_rate": self._to_float_or_none(invalid_rate),
+                            "chosen_operator": chosen_operator,
+                        },
+                    )
+                    if isinstance(reflection_payload, dict) and len(reflection_payload) > 0:
+                        if isinstance(reflection_payload.get("reflection_report"), dict):
+                            self._write_reflection_report_log(
+                                {
+                                    "gen": int(pop + 1),
+                                    "mode": self.mode,
+                                    "record": reflection_payload.get("reflection_report"),
+                                    "llm_meta": reflection_payload.get("reflection_llm", {}),
+                                }
+                            )
+                        if isinstance(reflection_payload.get("memory_updates"), list) and len(reflection_payload.get("memory_updates")) > 0:
+                            self._write_memory_updates_log(
+                                {
+                                    "gen": int(pop + 1),
+                                    "mode": self.mode,
+                                    "updates": reflection_payload.get("memory_updates"),
+                                }
+                            )
+                except Exception as exc:
+                    if self.debug_mode:
+                        print(f"agentic_full reflection failed: {exc}")
 
             print(f"--- {pop + 1} of {self.n_pop} populations finished. Time Cost:  {((time.time()-time_start)/60):.1f} m")
             print("Pop Objs: ", end=" ")

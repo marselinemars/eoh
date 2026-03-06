@@ -967,7 +967,7 @@ class AgenticController:
             "skipped": False,
         }
 
-    def run(self, observation):
+    def run(self, observation, **_kwargs):
         observation_json = json.dumps(observation, ensure_ascii=True)
 
         diagnoser_prompt = self._build_prompt(DIAGNOSER_PROMPT_TEMPLATE, OBS_JSON=observation_json)
