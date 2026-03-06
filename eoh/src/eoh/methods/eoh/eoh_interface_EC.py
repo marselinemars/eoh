@@ -31,6 +31,7 @@ class InterfaceEC():
         self.use_numba = use_numba
         self.max_offspring_retries = int(os.getenv("EOH_OFFSPRING_RETRIES", "4"))
         self.parallel_backend = os.getenv("EOH_PARALLEL_BACKEND", "loky")
+        self.parallel_fallback_sequential = os.getenv("EOH_PARALLEL_FALLBACK_SEQUENTIAL", "1") == "1"
         self.controller_parent_mix = None
         self.controller_prompt_modifiers = []
         self.controller_preferred_parent_hashes = set()
@@ -363,9 +364,14 @@ class InterfaceEC():
                 batch_size=1,
             )(delayed(self.get_offspring)(pop, operator) for _ in range(n_targets))
         except Exception as e:
-            if self.debug:
-                print(f"Error: {e}")
-            print("Parallel time out .")
+            print(f"Parallel offspring generation failed for operator {operator}: {type(e).__name__}: {e}")
+            if self.parallel_fallback_sequential:
+                print("Falling back to sequential offspring generation.")
+                results = []
+                for _ in range(n_targets):
+                    results.append(self.get_offspring(pop, operator))
+            else:
+                print("Parallel time out .")
             
         time.sleep(2)
 
