@@ -3,6 +3,8 @@ import time
 import ast
 import os
 import json
+import types
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 from ...llm.interface_LLM import InterfaceLLM
@@ -221,7 +223,35 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         if "import numpy as np" not in code:
             code = "import numpy as np\n\n" + code
         ast.parse(code)
+        self._validate_runtime_contract(code)
         return code
+
+    def _validate_runtime_contract(self, code):
+        if self.prompt_func_name != "score" or self.prompt_func_inputs != ["item", "bins"]:
+            return
+        module = types.ModuleType("candidate_heuristic")
+        exec(code, module.__dict__)
+        if not hasattr(module, self.prompt_func_name):
+            raise RuntimeError("Generated code does not expose the required score function.")
+        probe_cases = [
+            (3, np.asarray([3.0, 5.0, 7.0], dtype=float)),
+            (6, np.asarray([6.0, 8.0, 10.0], dtype=float)),
+        ]
+        saw_nontrivial_variation = False
+        for item, bins in probe_cases:
+            raw = getattr(module, self.prompt_func_name)(item, bins.copy())
+            try:
+                scores = np.asarray(raw, dtype=float).reshape(-1)
+            except Exception as exc:
+                raise RuntimeError(f"score() output is not a numeric vector: {exc}") from exc
+            if len(scores) != len(bins):
+                raise RuntimeError("score() must return one numeric score per feasible bin.")
+            if not np.all(np.isfinite(scores)):
+                raise RuntimeError("score() output contains NaN or infinity.")
+            if np.max(scores) > np.min(scores):
+                saw_nontrivial_variation = True
+        if not saw_nontrivial_variation:
+            raise RuntimeError("score() output is constant on probe cases; heuristic is too weak/degenerate.")
 
     def _fallback_code(self):
         if self.prompt_func_name == "score" and self.prompt_func_inputs == ["item", "bins"]:

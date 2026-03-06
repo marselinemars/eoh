@@ -32,6 +32,8 @@ class InterfaceEC():
         self.max_offspring_retries = int(os.getenv("EOH_OFFSPRING_RETRIES", "4"))
         self.parallel_backend = os.getenv("EOH_PARALLEL_BACKEND", "loky")
         self.parallel_fallback_sequential = os.getenv("EOH_PARALLEL_FALLBACK_SEQUENTIAL", "1") == "1"
+        self.max_parallel_llm_requests = max(1, int(os.getenv("EOH_MAX_PARALLEL_LLM_REQUESTS", "2")))
+        self.max_parallel_i1_requests = max(1, int(os.getenv("EOH_MAX_PARALLEL_I1_REQUESTS", "1")))
         self.controller_parent_mix = None
         self.controller_prompt_modifiers = []
         self.controller_preferred_parent_hashes = set()
@@ -170,7 +172,7 @@ class InterfaceEC():
         population = []
 
         for i in range(n_create):
-            _,pop = self.get_algorithm([],'i1')
+            _,pop = self.get_algorithm([], 'i1')
             for p in pop:
                 population.append(p)
              
@@ -356,9 +358,13 @@ class InterfaceEC():
             return [], []
 
         results = []
+        parallel_jobs = min(self.n_p, self.max_parallel_llm_requests)
+        if operator == "i1":
+            parallel_jobs = min(parallel_jobs, self.max_parallel_i1_requests)
+        parallel_jobs = max(1, parallel_jobs)
         try:
             results = Parallel(
-                n_jobs=self.n_p,
+                n_jobs=parallel_jobs,
                 timeout=self.timeout + 15,
                 backend=self.parallel_backend,
                 batch_size=1,
