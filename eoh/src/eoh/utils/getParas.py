@@ -52,7 +52,7 @@ class Paras():
         #####################
         ###  Run mode / logging ###
         #####################
-        self.eoh_mode = "baseline"  # baseline | routed
+        self.eoh_mode = "baseline"  # baseline | routed | planner_population
         self.route_controller_enabled = True
         self.route_controller_window = 5
         self.route_controller_use_llm = True
@@ -69,6 +69,9 @@ class Paras():
         self.route_use_probabilistic = True
         self.route_shuffle_operator_order = False
         self.log_full_population = False
+        self.planner_population_enabled = True
+        self.planner_population_view_size = 8
+        self.planner_population_json_retries = 3
 
 
     def set_parallel(self):

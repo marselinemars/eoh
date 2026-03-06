@@ -33,8 +33,9 @@ class InterfaceEC():
         self.parallel_backend = os.getenv("EOH_PARALLEL_BACKEND", "loky")
         self.controller_parent_mix = None
         self.controller_prompt_modifiers = []
+        self.controller_preferred_parent_hashes = set()
 
-    def set_controller_context(self, parent_mix=None, prompt_modifiers=None):
+    def set_controller_context(self, parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None):
         if isinstance(parent_mix, dict):
             self.controller_parent_mix = dict(parent_mix)
         else:
@@ -44,10 +45,16 @@ class InterfaceEC():
             self.controller_prompt_modifiers = [str(x).strip() for x in prompt_modifiers if str(x).strip()][:4]
         else:
             self.controller_prompt_modifiers = []
+        if isinstance(preferred_parent_hashes, list):
+            self.controller_preferred_parent_hashes = {str(x).strip() for x in preferred_parent_hashes if str(x).strip()}
+        else:
+            self.controller_preferred_parent_hashes = set()
         self.evol.set_prompt_modifiers(self.controller_prompt_modifiers)
 
     def _normalize_mix(self, mix):
         keys = ["elite", "diverse", "random"]
+        if isinstance(mix, dict) and "preferred" in mix:
+            keys.append("preferred")
         vals = {}
         for k in keys:
             try:
@@ -56,6 +63,8 @@ class InterfaceEC():
                 vals[k] = 0.0
         total = sum(vals.values())
         if total <= 1e-12:
+            if "preferred" in keys:
+                return {"elite": 0.20, "diverse": 0.10, "random": 0.10, "preferred": 0.60}
             return {"elite": 0.5, "diverse": 0.3, "random": 0.2}
         return {k: vals[k] / total for k in keys}
 
@@ -81,10 +90,20 @@ class InterfaceEC():
             diverse_pool.append(ind)
         if len(diverse_pool) == 0:
             diverse_pool = non_elite
+        preferred_pool = []
+        if len(self.controller_preferred_parent_hashes) > 0:
+            for ind in sorted_pop:
+                code = ind.get("code")
+                if not isinstance(code, str):
+                    continue
+                code_hash = hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
+                if code_hash in self.controller_preferred_parent_hashes:
+                    preferred_pool.append(ind)
         return {
             "elite": elite_pool,
             "diverse": diverse_pool,
             "random": sorted_pop,
+            "preferred": preferred_pool,
         }
 
     def _select_parents(self, pop, m):
@@ -95,7 +114,7 @@ class InterfaceEC():
         mix = self._normalize_mix(self.controller_parent_mix)
         pools = self._build_parent_pools(pop)
         parents = []
-        keys = ["elite", "diverse", "random"]
+        keys = ["preferred", "elite", "diverse", "random"] if "preferred" in mix else ["elite", "diverse", "random"]
         for _ in range(m):
             draw = random.random()
             cum = 0.0
@@ -160,7 +179,7 @@ class InterfaceEC():
 
         population = []
 
-        fitness = Parallel(n_jobs=n_p)(delayed(self.interface_eval.evaluate)(seed['code']) for seed in seeds)
+        evaluations = Parallel(n_jobs=n_p)(delayed(self._evaluate_candidate)(seed['code']) for seed in seeds)
 
         for i in range(len(seeds)):
             try:
@@ -168,11 +187,22 @@ class InterfaceEC():
                     'algorithm': seeds[i]['algorithm'],
                     'code': seeds[i]['code'],
                     'objective': None,
-                    'other_inf': None
+                    'other_inf': {
+                        "lineage": {
+                            "created_by": "seed",
+                            "parent_ids": [],
+                            "parent_hashes": [],
+                            "note": "seed_population",
+                        }
+                    }
                 }
 
-                obj = np.array(fitness[i])
+                eval_result = evaluations[i]
+                fitness = eval_result.get("fitness") if isinstance(eval_result, dict) else eval_result
+                obj = np.array(fitness)
                 seed_alg['objective'] = np.round(obj, 5)
+                if isinstance(eval_result, dict) and isinstance(eval_result.get("details"), dict):
+                    seed_alg['other_inf'].update(eval_result.get("details"))
                 population.append(seed_alg)
 
             except Exception as e:
@@ -215,6 +245,20 @@ class InterfaceEC():
 
         return parents, offspring
 
+    def _evaluate_candidate(self, code):
+        if hasattr(self.interface_eval, "evaluate_with_details"):
+            details = self.interface_eval.evaluate_with_details(code, split="train")
+            if isinstance(details, dict):
+                return {
+                    "fitness": details.get("fitness"),
+                    "details": details,
+                }
+        fitness = self.interface_eval.evaluate(code)
+        return {
+            "fitness": fitness,
+            "details": None,
+        }
+
     def get_offspring(self, pop, operator):
         last_error = None
         for attempt in range(1, self.max_offspring_retries + 1):
@@ -250,14 +294,17 @@ class InterfaceEC():
                         break
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(self.interface_eval.evaluate, code)
-                    fitness = future.result(timeout=self.timeout)
+                    future = executor.submit(self._evaluate_candidate, code)
+                    eval_result = future.result(timeout=self.timeout)
                     future.cancel()
 
+                fitness = eval_result.get("fitness") if isinstance(eval_result, dict) else eval_result
                 if fitness is None:
                     raise RuntimeError("Evaluation returned None.")
 
                 offspring['objective'] = np.round(fitness, 5)
+                if isinstance(eval_result, dict):
+                    offspring['other_inf'] = eval_result.get("details")
                 return p, offspring
 
             except Exception as e:

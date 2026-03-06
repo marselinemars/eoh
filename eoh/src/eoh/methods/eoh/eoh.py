@@ -8,6 +8,13 @@ import concurrent.futures
 
 from .eoh_interface_EC import InterfaceEC
 from .agentic_controller import AgenticController
+from .population_planner import (
+    PopulationPlanner,
+    PopulationPlannerExecutor,
+    build_heuristic_cards,
+    build_population_summary,
+    select_planner_cards,
+)
 # main class for eoh
 class EOH:
 
@@ -63,7 +70,7 @@ class EOH:
         self.use_numba = paras.eva_numba_decorator
 
         self.mode = getattr(paras, "eoh_mode", "baseline")
-        if self.mode not in ["baseline", "routed", "agentic"]:
+        if self.mode not in ["baseline", "routed", "agentic", "planner_population"]:
             print(f"Unknown eoh_mode={self.mode}, fallback to baseline.")
             self.mode = "baseline"
         if self.mode == "agentic":
@@ -94,10 +101,19 @@ class EOH:
         self.llm_diagnoser_raw_log_path = os.path.join(self.output_path, "results", "llm_diagnoser_raw.jsonl")
         self.llm_planner_raw_log_path = os.path.join(self.output_path, "results", "llm_planner_raw.jsonl")
         self.llm_critic_raw_log_path = os.path.join(self.output_path, "results", "llm_critic_raw.jsonl")
+        self.heuristic_cards_log_path = os.path.join(self.output_path, "results", "heuristic_cards.jsonl")
+        self.population_summary_log_path = os.path.join(self.output_path, "results", "population_summary.jsonl")
+        self.population_planner_output_log_path = os.path.join(self.output_path, "results", "population_planner_output.jsonl")
+        self.executed_interventions_log_path = os.path.join(self.output_path, "results", "executed_interventions.jsonl")
+        self.offspring_lineage_log_path = os.path.join(self.output_path, "results", "offspring_lineage.jsonl")
+        self.planner_population_view_size = max(4, int(getattr(paras, "planner_population_view_size", 8)))
+        self.planner_population_json_retries = max(1, int(getattr(paras, "planner_population_json_retries", 3)))
 
         print("- EoH parameters loaded -")
 
         self.controller = None
+        self.population_planner = None
+        self.population_executor = None
         if self.mode == "routed" and self.route_controller_enabled and self.route_controller_use_llm:
             self.controller = AgenticController(
                 self.api_endpoint,
@@ -108,6 +124,17 @@ class EOH:
                 use_critic_agent=self.route_controller_use_critic,
                 debug_mode=self.debug_mode,
             )
+        if self.mode == "planner_population" and bool(getattr(paras, "planner_population_enabled", True)):
+            self.population_planner = PopulationPlanner(
+                self.api_endpoint,
+                self.api_key,
+                self.llm_model,
+                self.use_local_llm,
+                self.llm_local_url,
+                debug_mode=self.debug_mode,
+                max_retries=self.planner_population_json_retries,
+            )
+            self.population_executor = PopulationPlannerExecutor()
 
         # Set a random seed
         random.seed(2024)
@@ -140,6 +167,16 @@ class EOH:
         with open(self.llm_planner_raw_log_path, "w", encoding="utf-8") as _:
             pass
         with open(self.llm_critic_raw_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.heuristic_cards_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.population_summary_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.population_planner_output_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.executed_interventions_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.offspring_lineage_log_path, "w", encoding="utf-8") as _:
             pass
 
     def _write_run_log(self, record):
@@ -178,10 +215,58 @@ class EOH:
         with open(self.llm_critic_raw_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
+    def _write_heuristic_cards_log(self, record):
+        with open(self.heuristic_cards_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_population_summary_log(self, record):
+        with open(self.population_summary_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_population_planner_output_log(self, record):
+        with open(self.population_planner_output_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_executed_interventions_log(self, record):
+        with open(self.executed_interventions_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_offspring_lineage_log(self, record):
+        with open(self.offspring_lineage_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
     def _code_hash(self, code):
         if code is None:
             return None
         return hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
+
+    def _ensure_individual_metadata(self, individual, generation_index, created_by="seed", parent_ids=None, parent_hashes=None, note=""):
+        if not isinstance(individual, dict):
+            return
+        if not isinstance(individual.get("other_inf"), dict):
+            individual["other_inf"] = {}
+        other_inf = individual["other_inf"]
+        code_hash = self._code_hash(individual.get("code")) or "none"
+        if not other_inf.get("heuristic_id"):
+            other_inf["heuristic_id"] = f"H{int(generation_index)}_{code_hash}"
+        lineage = other_inf.get("lineage", {}) if isinstance(other_inf.get("lineage"), dict) else {}
+        if "created_by" not in lineage:
+            lineage["created_by"] = created_by
+        if parent_ids is not None:
+            lineage["parent_ids"] = list(parent_ids)
+        else:
+            lineage.setdefault("parent_ids", [])
+        if parent_hashes is not None:
+            lineage["parent_hashes"] = list(parent_hashes)
+        else:
+            lineage.setdefault("parent_hashes", [])
+        if note:
+            lineage["note"] = note
+        other_inf["lineage"] = lineage
+
+    def _ensure_population_metadata(self, population, generation_index, created_by="seed"):
+        for individual in population:
+            self._ensure_individual_metadata(individual, generation_index, created_by=created_by)
 
     def _compact_individual(self, individual):
         return {
@@ -268,6 +353,39 @@ class EOH:
             return float(value)
         except (TypeError, ValueError):
             return float(default)
+
+    def _behavior_metric_from_individual(self, individual, metric_name):
+        if not isinstance(individual, dict):
+            return None
+        other_inf = individual.get("other_inf", {}) if isinstance(individual.get("other_inf"), dict) else {}
+        trace_metrics = other_inf.get("trace_metrics", {}) if isinstance(other_inf.get("trace_metrics"), dict) else {}
+        value = trace_metrics.get(metric_name)
+        return self._to_float_or_none(value)
+
+    def _behavior_delta(self, individual, parent_card, metric_name):
+        child = self._behavior_metric_from_individual(individual, metric_name)
+        parent = None
+        if parent_card is not None:
+            try:
+                parent = float(parent_card.behavior.get(metric_name, 0.0))
+            except Exception:
+                parent = None
+        if child is None or parent is None:
+            return None
+        return float(child - parent)
+
+    def _last_major_improvement_generation(self, best_history):
+        if len(best_history) < 2:
+            return None
+        best_gen = None
+        for idx in range(1, len(best_history)):
+            prev = best_history[idx - 1]
+            curr = best_history[idx]
+            if prev is None or curr is None:
+                continue
+            if curr < (prev - self.route_improvement_epsilon):
+                best_gen = idx
+        return best_gen
 
     def _top_heuristics_summary(self, population, top_k=5):
         summary = []
@@ -581,6 +699,12 @@ class EOH:
         except Exception:
             return None, True
 
+    def _problem_context_for_planner(self):
+        return (
+            "Problem: online bin packing. Items arrive sequentially and must be assigned immediately to bins with fixed capacity. "
+            "Lower fitness is better. The planner should reason over heuristic behavior, structure, diagnosis, and lineage."
+        )
+
     # run eoh 
     def run(self):
 
@@ -608,6 +732,7 @@ class EOH:
             with open(self.seed_path) as file:
                 data = json.load(file)
             population = interface_ec.population_generation_seed(data,self.exp_n_proc)
+            self._ensure_population_metadata(population, generation_index=0, created_by="seed")
             self._save_population(population, 0)
             n_start = 0
         else:
@@ -617,12 +742,14 @@ class EOH:
                     data = json.load(file)
                 for individual in data:
                     population.append(individual)
+                self._ensure_population_metadata(population, generation_index=self.load_pop_id, created_by="loaded")
                 print("initial population has been loaded!")
                 n_start = self.load_pop_id
             else:  # create new population
                 print("creating initial population:")
                 population = interface_ec.population_generation()
                 population = self.manage.population_management(population, self.pop_size)
+                self._ensure_population_metadata(population, generation_index=0, created_by="init")
 
                 # print(len(population))
                 # if len(population)<self.pop_size:
@@ -680,7 +807,175 @@ class EOH:
             plan_debug = {}
             critic_debug = {}
 
-            if self.mode == "routed":
+            if self.mode == "planner_population":
+                interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None)
+                self._ensure_population_metadata(population, generation_index=pop, created_by="survivor")
+                cards = build_heuristic_cards(population, generation=pop)
+                summary = build_population_summary(
+                    cards=cards,
+                    generation=int(pop + 1),
+                    best_history=best_history,
+                    stagnation_length=no_improve_gens,
+                    last_major_improvement_generation=self._last_major_improvement_generation(best_history),
+                )
+                planner_cards = select_planner_cards(cards, max_cards=self.planner_population_view_size)
+                planner_card_map = {card.id: card for card in planner_cards}
+                diagnosis_label = summary.current_search_regime.upper()
+                self._write_heuristic_cards_log(
+                    {
+                        "gen": int(pop + 1),
+                        "mode": self.mode,
+                        "cards": [card.to_dict() for card in cards],
+                        "shown_card_ids": [card.id for card in planner_cards],
+                    }
+                )
+                self._write_population_summary_log(
+                    {
+                        "gen": int(pop + 1),
+                        "mode": self.mode,
+                        "summary": summary.to_dict(),
+                    }
+                )
+                planner_result = self.population_planner.plan(
+                    problem_context=self._problem_context_for_planner(),
+                    summary=summary,
+                    cards=planner_cards,
+                )
+                planner_output_obj = planner_result["planner_output"]
+                planner_llm_meta = planner_result["llm_meta"]
+                self._write_population_planner_output_log(
+                    {
+                        "gen": int(pop + 1),
+                        "mode": self.mode,
+                        "shown_cards": [card.to_dict() for card in planner_cards],
+                        "population_summary": summary.to_dict(),
+                        "planner_output": planner_output_obj.to_dict(),
+                        "llm_meta": planner_llm_meta,
+                    }
+                )
+                intervention_queue = self.population_executor.build_queue(
+                    planner_output=planner_output_obj,
+                    cards=planner_cards,
+                    summary=summary,
+                    generation_budget=self.pop_size,
+                )
+                chosen_operator = "planner:" + ",".join(
+                    f"{item.get('execution_mode')}x{int(item.get('offspring_count', 0))}"
+                    for item in intervention_queue
+                    if int(item.get("offspring_count", 0) or 0) > 0
+                )
+                executed_ops = []
+                executed_deltas = []
+                for idx_exec, item in enumerate(intervention_queue):
+                    execution_mode = str(item.get("execution_mode", ""))
+                    targets = [str(x) for x in item.get("targets", [])]
+                    operator = item.get("operator")
+                    prompt_modifiers = item.get("prompt_modifiers", [])
+                    offspring_count = int(item.get("offspring_count", 0) or 0)
+                    self._write_executed_interventions_log(
+                        {
+                            "gen": int(pop + 1),
+                            "mode": self.mode,
+                            "execution_rank": int(idx_exec + 1),
+                            "intervention": item,
+                        }
+                    )
+                    if execution_mode == "evaluate" or operator is None or offspring_count <= 0:
+                        continue
+                    print(f" INT: {execution_mode}, [{idx_exec + 1} / {len(intervention_queue)}], n={offspring_count} ", end="|")
+                    preferred_hashes = [planner_card_map[target].code_hash for target in targets if target in planner_card_map]
+                    parent_mix = None
+                    if len(preferred_hashes) > 0 and execution_mode in ["rewrite", "tune", "variant"]:
+                        parent_mix = {"preferred": 0.75, "elite": 0.15, "diverse": 0.10, "random": 0.0}
+                    interface_ec.set_controller_context(
+                        parent_mix=parent_mix,
+                        prompt_modifiers=prompt_modifiers,
+                        preferred_parent_hashes=preferred_hashes,
+                    )
+                    best_before = self._best_objective(population)
+                    parent_payloads, offsprings = interface_ec.get_algorithm(population, operator, n_offspring=offspring_count)
+                    for off_idx, offspring in enumerate(offsprings):
+                        target_cards = [planner_card_map[target] for target in targets if target in planner_card_map]
+                        primary_parent = target_cards[0] if len(target_cards) > 0 else None
+                        parent_hashes = []
+                        parent_ids = list(targets)
+                        raw_parents = parent_payloads[off_idx] if off_idx < len(parent_payloads) else None
+                        if isinstance(raw_parents, list):
+                            for parent in raw_parents:
+                                parent_hash = self._code_hash(parent.get("code")) if isinstance(parent, dict) else None
+                                if parent_hash is not None:
+                                    parent_hashes.append(parent_hash)
+                        self._ensure_individual_metadata(
+                            offspring,
+                            generation_index=int(pop + 1),
+                            created_by=execution_mode,
+                            parent_ids=parent_ids,
+                            parent_hashes=parent_hashes,
+                            note=item.get("goal", ""),
+                        )
+                        offspring["other_inf"]["planner_instruction"] = item.get("instruction", "")
+                        lineage_record = {
+                            "gen": int(pop + 1),
+                            "mode": self.mode,
+                            "offspring_id": offspring["other_inf"].get("heuristic_id"),
+                            "execution_mode": execution_mode,
+                            "operator": operator,
+                            "target_ids": parent_ids,
+                            "fitness": self._to_float_or_none(offspring.get("objective")),
+                            "fitness_delta": None if primary_parent is None else (
+                                None if offspring.get("objective") is None or primary_parent.fitness is None else float(primary_parent.fitness - float(offspring.get("objective")))
+                            ),
+                            "mean_residual_ratio_delta": self._behavior_delta(offspring, primary_parent, "mean_residual_ratio"),
+                            "fragmentation_delta": self._behavior_delta(offspring, primary_parent, "fragmentation_index"),
+                            "resource_opening_rate_early_delta": self._behavior_delta(offspring, primary_parent, "resource_opening_rate_early"),
+                            "order_sensitivity_delta": self._behavior_delta(offspring, primary_parent, "order_sensitivity"),
+                        }
+                        self._write_offspring_lineage_log(lineage_record)
+                    self.add2pop(population, offsprings)
+                    generation_offspring.extend(offsprings)
+                    for off in offsprings:
+                        print(" Obj: ", off["objective"], end="|")
+                    size_act = min(len(population), self.pop_size)
+                    population = self.manage.population_management(population, size_act)
+                    best_after = self._best_objective(population)
+                    n_offspring = len(offsprings)
+                    n_valid = self._count_valid(offsprings)
+                    n_invalid = n_offspring - n_valid
+                    invalid_rate_op = (n_invalid / n_offspring) if n_offspring > 0 else 1.0
+                    delta_best = None
+                    if best_before is not None and best_after is not None:
+                        delta_best = float(best_before - best_after)
+                    op_record = {
+                        "gen": int(pop + 1),
+                        "mode": self.mode,
+                        "operator": operator,
+                        "execution_mode": execution_mode,
+                        "executed": True,
+                        "diagnosis_label": diagnosis_label,
+                        "n_offspring": int(n_offspring),
+                        "n_valid": int(n_valid),
+                        "n_invalid": int(n_invalid),
+                        "invalid_rate": float(invalid_rate_op),
+                        "best_before": self._to_float_or_none(best_before),
+                        "best_after": self._to_float_or_none(best_after),
+                        "delta_best": self._to_float_or_none(delta_best),
+                        "targets": targets,
+                        "prompt_modifiers": prompt_modifiers,
+                    }
+                    self._write_operator_log(op_record)
+                    op_history.append(op_record)
+                    executed_ops.append(operator)
+                    executed_deltas.append(delta_best)
+                    print()
+                interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None)
+                last_used_ops.extend(executed_ops)
+                recent_ops.extend(executed_ops)
+                recent_deltas.extend(executed_deltas)
+                if len(recent_ops) > self.route_recent_window:
+                    recent_ops = recent_ops[-self.route_recent_window:]
+                    recent_deltas = recent_deltas[-self.route_recent_window:]
+
+            elif self.mode == "routed":
                 if self.controller is not None:
                     observation = self._build_observation_packet(
                         generation_index=pop,
