@@ -346,6 +346,54 @@ class EOH:
             return None
         return float(np.mean(np.array(values)))
 
+    def _best_behavior_snapshot(self, population):
+        metric_names = [
+            "resource_utilization.mean_residual_ratio",
+            "resource_utilization.residual_variance",
+            "resource_utilization.fragmentation_index",
+            "temporal_behavior.resource_opening_rate_early",
+            "temporal_behavior.resource_opening_rate_mid",
+            "temporal_behavior.resource_opening_rate_late",
+            "temporal_behavior.phase_shift_index",
+            "decision_pattern.extreme_option_preference",
+            "decision_pattern.choice_entropy",
+            "decision_pattern.score_margin_mean",
+            "decision_pattern.score_margin_variance",
+            "robustness.order_sensitivity",
+            "robustness.instance_family_variance",
+            "robustness.holdout_gap",
+        ]
+        return {name: self._best_behavior_metric(population, name) for name in metric_names}
+
+    def _behavior_change_summary(self, before_metrics, after_metrics):
+        before_metrics = before_metrics if isinstance(before_metrics, dict) else {}
+        after_metrics = after_metrics if isinstance(after_metrics, dict) else {}
+        keys = sorted(set(before_metrics.keys()).union(set(after_metrics.keys())))
+        outcomes = []
+        tradeoffs = []
+        for key in keys:
+            before = self._to_float_or_none(before_metrics.get(key))
+            after = self._to_float_or_none(after_metrics.get(key))
+            if before is None or after is None:
+                continue
+            delta = float(after - before)
+            direction = "increased" if delta > 0 else "decreased"
+            magnitude = abs(delta)
+            record = {
+                "target": key,
+                "before": before,
+                "after": after,
+                "delta": delta,
+                "observed_change": f"{key} {direction} by {magnitude:.4f}",
+                "supported": magnitude >= 1e-6,
+                "metrics": [key],
+            }
+            outcomes.append(record)
+            if magnitude >= 0.03:
+                tradeoffs.append(record["observed_change"])
+        outcomes.sort(key=lambda item: abs(item.get("delta", 0.0)), reverse=True)
+        return outcomes[:8], tradeoffs[:6]
+
     def _safe_float(self, value, default=0.0):
         try:
             return float(value)
@@ -858,6 +906,9 @@ class EOH:
                             "prompt_modifiers": planner_output.get("prompt_modifiers"),
                             "evaluation_plan": planner_output.get("evaluation_plan"),
                             "rationale": planner_output.get("rationale"),
+                            "search_regime": artifacts.get("search_regime", {}),
+                            "branch_policy": artifacts.get("intervention_portfolio", {}).get("branch_policy", {}) if isinstance(artifacts.get("intervention_portfolio"), dict) else {},
+                            "selected_parent_groups": artifacts.get("execution_plan", {}).get("selected_parent_groups", []) if isinstance(artifacts.get("execution_plan"), dict) else [],
                             "pure_llm_output": bool(plan_debug.get("flags", {}).get("pure_llm_output", False)),
                             "llm_output_patched": bool(plan_debug.get("flags", {}).get("llm_output_patched", False)),
                             "fully_fallback": bool(plan_debug.get("flags", {}).get("fully_fallback", False)),
@@ -876,6 +927,7 @@ class EOH:
                     interface_ec.set_controller_context(
                         parent_mix=active_parent_mix,
                         prompt_modifiers=active_prompt_modifiers,
+                        preferred_parent_hashes=artifacts.get("execution_plan", {}).get("preferred_parent_hashes", []),
                     )
                     sampled_ops, op_execution_plan = self._sample_routed_operator_batch(
                         active_op_probs,
@@ -1009,6 +1061,9 @@ class EOH:
                                     "gen": int(pop + 1),
                                     "mode": self.mode,
                                     "record": artifacts.get("intervention_portfolio"),
+                                    "search_regime": artifacts.get("search_regime", {}),
+                                    "parent_candidate_summaries": artifacts.get("parent_candidate_summaries", []),
+                                    "memory_context": artifacts.get("memory_context", []),
                                     "fallback_used": bool(artifacts.get("intervention_portfolio", {}).get("fallback_used", False)),
                                     "fallback_reason": str(artifacts.get("intervention_portfolio", {}).get("fallback_reason", "")),
                                     "missing_required_metrics": artifacts.get("intervention_portfolio", {}).get("missing_required_metrics", []),
@@ -1033,7 +1088,7 @@ class EOH:
                                 }
                             )
                 else:
-                    interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None)
+                    interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None)
                     diagnosis_label = self._diagnose_routed(
                         last_improved=last_improved,
                         no_improve_gens=no_improve_gens,
@@ -1117,7 +1172,7 @@ class EOH:
                 elif e1_cooldown_remaining > 0:
                     e1_cooldown_remaining -= 1
             else:
-                interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None)
+                interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None)
                 diagnosis_label = "BASELINE_SCHEDULE"
                 chosen_operator = "schedule:" + ",".join(self.operators)
                 for i in range(n_op):
@@ -1255,6 +1310,21 @@ class EOH:
                 "parent_mix": active_parent_mix,
                 "prompt_modifiers": active_prompt_modifiers,
                 "op_probs": active_op_probs,
+                "search_regime": (
+                    artifacts.get("search_regime", {}).get("name", "")
+                    if self.mode == "agentic_full" and isinstance(artifacts, dict)
+                    else ""
+                ),
+                "selected_parent_groups": (
+                    artifacts.get("execution_plan", {}).get("selected_parent_groups", [])
+                    if self.mode == "agentic_full" and isinstance(artifacts, dict)
+                    else []
+                ),
+                "branch_count": (
+                    int(artifacts.get("intervention_portfolio", {}).get("branch_policy", {}).get("branch_count", 0) or 0)
+                    if self.mode == "agentic_full" and isinstance(artifacts, dict)
+                    else 0
+                ),
                 "diagnoser_fully_fallback": bool(diagnoser_stage_flags.get("fully_fallback", False)),
                 "diagnoser_llm_patched": bool(diagnoser_stage_flags.get("llm_output_patched", False)),
                 "diagnoser_pure_llm": bool(diagnoser_stage_flags.get("pure_llm_output", False)),
@@ -1292,6 +1362,16 @@ class EOH:
             }
             self._write_run_log(run_record)
 
+            best_behavior_before = {}
+            if self.mode == "agentic_full" and isinstance(artifacts, dict):
+                metric_values = artifacts.get("behavior_evidence", {}).get("metric_values", {})
+                if isinstance(metric_values, dict):
+                    for metric_name, entry in metric_values.items():
+                        if isinstance(entry, dict) and entry.get("value") is not None:
+                            best_behavior_before[metric_name] = self._to_float_or_none(entry.get("value"))
+            best_behavior_after = self._best_behavior_snapshot(population)
+            behavioral_outcomes, behavioral_tradeoffs = self._behavior_change_summary(best_behavior_before, best_behavior_after)
+
             if self.mode == "agentic_full" and self.controller is not None and hasattr(self.controller, "reflect_generation"):
                 try:
                     reflection_payload = self.controller.reflect_generation(
@@ -1302,6 +1382,12 @@ class EOH:
                             "train_delta": self._to_float_or_none(train_delta),
                             "invalid_rate": self._to_float_or_none(invalid_rate),
                             "chosen_operator": chosen_operator,
+                            "search_regime": artifacts.get("search_regime", {}).get("name", "") if isinstance(artifacts, dict) else "",
+                            "executed_actions": artifacts.get("execution_plan", {}).get("applied_actions", []) if isinstance(artifacts, dict) else [],
+                            "behavior_before": best_behavior_before,
+                            "behavior_after": best_behavior_after,
+                            "behavioral_outcomes": behavioral_outcomes,
+                            "behavioral_tradeoffs": behavioral_tradeoffs,
                         },
                     )
                     if isinstance(reflection_payload, dict) and len(reflection_payload) > 0:

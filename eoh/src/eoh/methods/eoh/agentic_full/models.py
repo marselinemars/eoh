@@ -85,10 +85,13 @@ class DiagnosisReport:
 class InterventionPortfolio:
     portfolio_id: str
     based_on_diagnosis: str
+    search_regime: str
     generation_objective: str
     interventions: List[Dict[str, Any]]
+    branches: List[Dict[str, Any]]
     budget_allocation: Dict[str, float]
     branch_policy: Dict[str, Any]
+    parent_candidate_groups_used: List[str]
     success_criteria: List[str]
     rationale: List[str]
     fallback_used: bool = False
@@ -105,9 +108,11 @@ class ReflectionReport:
     reflection_id: str
     based_on_portfolio: str
     outcome_summary: Dict[str, Any]
+    behavioral_outcomes: List[Dict[str, Any]]
     supported_hypotheses: List[str]
     rejected_hypotheses: List[str]
     observed_effects: List[str]
+    tradeoffs: List[str]
     lessons: List[str]
     memory_updates: List[Dict[str, Any]]
 
@@ -198,10 +203,13 @@ def validate_intervention_portfolio(payload: Dict[str, Any]) -> List[str]:
     for key in [
         "portfolio_id",
         "based_on_diagnosis",
+        "search_regime",
         "generation_objective",
         "interventions",
+        "branches",
         "budget_allocation",
         "branch_policy",
+        "parent_candidate_groups_used",
         "success_criteria",
         "rationale",
         "fallback_used",
@@ -213,8 +221,12 @@ def validate_intervention_portfolio(payload: Dict[str, Any]) -> List[str]:
             errors.append(f"missing_{key}")
     if not isinstance(payload.get("interventions"), list):
         errors.append("interventions_not_list")
+    if not isinstance(payload.get("branches"), list):
+        errors.append("branches_not_list")
     if not isinstance(payload.get("budget_allocation"), dict):
         errors.append("budget_allocation_not_dict")
+    if not isinstance(payload.get("parent_candidate_groups_used"), list):
+        errors.append("parent_candidate_groups_used_not_list")
     if not isinstance(payload.get("missing_required_metrics"), list):
         errors.append("missing_required_metrics_not_list")
     return errors
@@ -228,15 +240,17 @@ def validate_reflection_report(payload: Dict[str, Any]) -> List[str]:
         "reflection_id",
         "based_on_portfolio",
         "outcome_summary",
+        "behavioral_outcomes",
         "supported_hypotheses",
         "rejected_hypotheses",
         "observed_effects",
+        "tradeoffs",
         "lessons",
         "memory_updates",
     ]:
         if key not in payload:
             errors.append(f"missing_{key}")
-    for container_key in ["supported_hypotheses", "rejected_hypotheses", "observed_effects", "lessons", "memory_updates"]:
+    for container_key in ["behavioral_outcomes", "supported_hypotheses", "rejected_hypotheses", "observed_effects", "tradeoffs", "lessons", "memory_updates"]:
         if not isinstance(payload.get(container_key), list):
             errors.append(f"{container_key}_not_list")
     return errors
@@ -253,10 +267,15 @@ def normalize_op_probs(values: Dict[str, Any]) -> Dict[str, float]:
 
 def normalize_parent_mix(values: Dict[str, Any]) -> Dict[str, float]:
     keys = ["elite", "diverse", "random"]
+    if isinstance(values, dict) and "preferred" in values:
+        keys.append("preferred")
     cleaned = {k: max(0.0, _as_float(values.get(k), 0.0)) for k in keys}
     total = sum(cleaned.values())
     if total <= 1e-12:
-        return {"elite": 0.5, "diverse": 0.3, "random": 0.2}
+        fallback = {"elite": 0.5, "diverse": 0.3, "random": 0.2}
+        if "preferred" in keys:
+            fallback = {"elite": 0.4, "diverse": 0.25, "random": 0.15, "preferred": 0.20}
+        return fallback
     return {k: cleaned[k] / total for k in keys}
 
 

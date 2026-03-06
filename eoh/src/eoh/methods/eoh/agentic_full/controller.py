@@ -113,6 +113,15 @@ BehaviorEvidenceReport:
 Observation:
 {OBS_JSON}
 
+Search regime:
+{SEARCH_REGIME_JSON}
+
+Relevant memory retrievals:
+{MEMORY_JSON}
+
+Available parent candidate summaries:
+{PARENT_CANDIDATES_JSON}
+
 Available action families:
 - evolutionary.*
 - corrective.*
@@ -120,14 +129,20 @@ Available action families:
 - search_structure.*
 - memory.*
 
+Action ontology summary:
+{ACTION_ONTOLOGY_JSON}
+
 Return ONLY JSON:
 {{
   "portfolio_id": "string",
   "based_on_diagnosis": "string",
+  "search_regime": "string",
   "generation_objective": "string",
-  "interventions": [{{"action":"family.name","weight":0.0,"payload":{{}}}}],
+  "interventions": [{{"action":"family.name","weight":0.0,"payload":{{}},"intended_behavioral_target":"string","expected_behavioral_change":"string","expected_structural_change":"string","expected_fitness_effect":"string"}}],
+  "branches": [{{"branch_id":"string","objective":"string","budget_share":0.0,"parent_candidate_groups":["string"],"interventions":[{{"action":"family.name","weight":0.0,"payload":{{}},"intended_behavioral_target":"string","expected_behavioral_change":"string","expected_structural_change":"string","expected_fitness_effect":"string"}}],"success_criteria":["string"],"rationale":["string"]}}],
   "budget_allocation": {{"exploration":0.0,"exploitation":0.0,"evaluation":0.0}},
   "branch_policy": {{}},
+  "parent_candidate_groups_used": ["string"],
   "success_criteria": ["string"],
   "rationale": ["string"],
   "fallback_used": false,
@@ -137,14 +152,15 @@ Return ONLY JSON:
 }}
 Rules:
 - interventions non-empty and use ontology action names.
+- search_regime must match the provided regime.
 - weights in [0,1]
 - budget_allocation values in [0,1]
 - If evidence_quality.level is strong or partial, do not produce a generic fallback portfolio.
-- Use corrective actions when diagnoses imply them:
-  complexity barrier -> corrective.simplify_logic
-  aggressive early fill / fragmentation -> corrective.soften_thresholds or corrective.reduce_dominant_term
-  brittle tie behavior / low score margins -> corrective.adjust_tie_breaking_behavior
-  preserve useful motif but retune local behavior -> corrective.preserve_motif_retune_local_component
+- Use the full action ontology; combine evolutionary, corrective, evaluation, search_structure, and memory actions when justified.
+- Use memory retrievals as soft priors, not commands.
+- If multiple plausible improvement directions exist, you may create 2-3 branches with different objectives or parent groups. Do not branch unless the evidence justifies it.
+- Every intervention must explain what behavior it is trying to change and what structural effect it expects.
+- Parent candidate groups used must be chosen from the provided candidate summaries.
 - Rationale must cite metric names from BehaviorEvidenceReport.
 """
 
@@ -157,6 +173,9 @@ DiagnosisReport:
 InterventionPortfolio:
 {PORT_JSON}
 
+Prior behavior evidence:
+{EVIDENCE_JSON}
+
 Outcome summary:
 {OUTCOME_JSON}
 
@@ -165,12 +184,19 @@ Return ONLY JSON:
   "reflection_id": "string",
   "based_on_portfolio": "string",
   "outcome_summary": {{}},
+  "behavioral_outcomes": [{{"target":"string","observed_change":"string","supported":true,"metrics":["string"]}}],
   "supported_hypotheses": ["string"],
   "rejected_hypotheses": ["string"],
   "observed_effects": ["string"],
+  "tradeoffs": ["string"],
   "lessons": ["string"],
   "memory_updates": [{{"kind":"string","payload":{{}}}}]
 }}
+
+Rules:
+- Judge outcomes using both fitness changes and behavior changes.
+- If an intervention changed the intended behavior but did not yet improve best fitness, record that explicitly.
+- Cite metric names in behavioral_outcomes or observed_effects whenever possible.
 """
 
 
@@ -250,6 +276,8 @@ class AgenticFullController(AgenticController):
 
     def _validate_strategist(self, payload: Dict[str, Any]) -> List[str]:
         errors = validate_intervention_portfolio(payload)
+        if str(payload.get("search_regime", "")).strip() == "":
+            errors.append("missing_search_regime_value")
         interventions = payload.get("interventions", [])
         if isinstance(interventions, list):
             if len(interventions) == 0:
@@ -264,16 +292,52 @@ class AgenticFullController(AgenticController):
                 w = _to_float(item.get("weight"), None)
                 if w is None or w < 0.0 or w > 1.0:
                     errors.append("invalid_intervention_weight")
+                for required_text in [
+                    "intended_behavioral_target",
+                    "expected_behavioral_change",
+                    "expected_structural_change",
+                    "expected_fitness_effect",
+                ]:
+                    if str(item.get(required_text, "")).strip() == "":
+                        errors.append(f"missing_{required_text}")
+        branches = payload.get("branches", [])
+        if isinstance(branches, list):
+            for branch in branches:
+                if not isinstance(branch, dict):
+                    errors.append("branch_item_not_dict")
+                    continue
+                if str(branch.get("branch_id", "")).strip() == "":
+                    errors.append("branch_missing_id")
+                budget_share = _to_float(branch.get("budget_share"), None)
+                if budget_share is None or budget_share < 0.0 or budget_share > 1.0:
+                    errors.append("invalid_branch_budget_share")
+                if not isinstance(branch.get("interventions"), list) or len(branch.get("interventions")) == 0:
+                    errors.append("branch_missing_interventions")
+                if not isinstance(branch.get("rationale"), list) or len(branch.get("rationale")) == 0:
+                    errors.append("branch_missing_rationale")
         rationale = payload.get("rationale", [])
         if not isinstance(rationale, list) or len(rationale) < 2:
             errors.append("rationale_too_short")
         else:
             if not any(any(metric_name in str(line) for metric_name in REQUIRED_BEHAVIOR_METRICS) for line in rationale):
                 errors.append("rationale_missing_behavior_metric_citation")
+        if not isinstance(payload.get("parent_candidate_groups_used"), list):
+            errors.append("parent_candidate_groups_used_not_list")
         return errors
 
     def _validate_reflection(self, payload: Dict[str, Any]) -> List[str]:
-        return validate_reflection_report(payload)
+        errors = validate_reflection_report(payload)
+        outcomes = payload.get("behavioral_outcomes", [])
+        if isinstance(outcomes, list):
+            for item in outcomes:
+                if not isinstance(item, dict):
+                    errors.append("behavioral_outcome_not_dict")
+                    continue
+                if str(item.get("target", "")).strip() == "":
+                    errors.append("behavioral_outcome_missing_target")
+                if not isinstance(item.get("metrics", []), list):
+                    errors.append("behavioral_outcome_metrics_not_list")
+        return errors
 
     def _missing_required_metrics(self, evidence: Dict[str, Any]) -> List[str]:
         if not isinstance(evidence, dict):
@@ -294,6 +358,378 @@ class AgenticFullController(AgenticController):
         if evidence_quality.get("level") in ["strong", "partial"]:
             return True
         return len(self._missing_required_metrics(evidence)) <= 3
+
+    def _metric_value(self, evidence: Dict[str, Any], metric_name: str, default: Optional[float] = None) -> Optional[float]:
+        if not isinstance(evidence, dict):
+            return default
+        metric_values = evidence.get("metric_values", {}) if isinstance(evidence.get("metric_values"), dict) else {}
+        entry = metric_values.get(metric_name, {})
+        if not isinstance(entry, dict):
+            return default
+        value = _to_float(entry.get("value"), None)
+        if value is None:
+            return default
+        return float(value)
+
+    def _compute_search_regime(self, observation: Dict[str, Any], evidence: Dict[str, Any]) -> Dict[str, Any]:
+        gen = int(observation.get("gen", 0) or 0)
+        best_history = observation.get("best_history", []) if isinstance(observation.get("best_history"), list) else []
+        current_best = _to_float(observation.get("best_fitness"), None)
+        initial_best = _to_float(best_history[0], current_best) if len(best_history) > 0 else current_best
+        stagnation = int(observation.get("stagnation_len", 0) or 0)
+        improve_rate = _to_float(observation.get("improve_rate_k"), 0.0)
+        holdout_gap = self._metric_value(evidence, "robustness.holdout_gap", 0.0) or 0.0
+        order_sensitivity = self._metric_value(evidence, "robustness.order_sensitivity", 0.0) or 0.0
+        relative_gain = 0.0
+        if current_best is not None and initial_best is not None:
+            denom = max(abs(initial_best), 1e-8)
+            relative_gain = max(0.0, float(initial_best - current_best) / denom)
+        breakthrough = bool(relative_gain >= 0.05 or (gen >= 2 and improve_rate >= 0.34 and stagnation <= 1))
+        if breakthrough and (holdout_gap >= 0.05 or order_sensitivity >= 0.08):
+            regime = "robustness_refinement"
+            rationale = "Breakthrough exists but robustness metrics show fragility."
+        elif breakthrough and stagnation >= 3:
+            regime = "stagnation_recovery"
+            rationale = "Breakthrough exists but recent progress has stalled."
+        elif breakthrough:
+            regime = "post_breakthrough_refinement"
+            rationale = "A meaningful gain exists; preserve the motif and refine its remaining weaknesses."
+        else:
+            regime = "pre_breakthrough"
+            rationale = "No clear breakthrough yet; prioritize broad motif discovery and exploratory search."
+        return {
+            "name": regime,
+            "breakthrough_detected": breakthrough,
+            "relative_gain": float(relative_gain),
+            "stagnation_len": int(stagnation),
+            "improve_rate_k": float(improve_rate),
+            "rationale": rationale,
+        }
+
+    def _build_parent_candidate_summaries(self, profiles) -> List[Dict[str, Any]]:
+        if not isinstance(profiles, list) or len(profiles) == 0:
+            return []
+        sorted_profiles = sorted(
+            profiles,
+            key=lambda p: float(p.scalar_fitness if p.scalar_fitness is not None else float("inf")),
+        )
+        best = sorted_profiles[0]
+        best_behavior = best.behavior_trace_summary if isinstance(best.behavior_trace_summary, dict) else {}
+
+        def _metric(profile, name, default=0.0):
+            source = profile.behavior_trace_summary if isinstance(profile.behavior_trace_summary, dict) else {}
+            if name.startswith("structure."):
+                source = profile.complexity_metrics if isinstance(profile.complexity_metrics, dict) else {}
+            return _to_float(source.get(name), default)
+
+        def _distance_from_best(profile) -> float:
+            names = [
+                "resource_utilization.fragmentation_index",
+                "temporal_behavior.resource_opening_rate_early",
+                "decision_pattern.choice_entropy",
+                "decision_pattern.score_margin_mean",
+                "robustness.order_sensitivity",
+            ]
+            dist = 0.0
+            for name in names:
+                dist += abs(_to_float(profile.behavior_trace_summary.get(name), 0.0) - _to_float(best_behavior.get(name), 0.0))
+            return float(dist)
+
+        candidates = []
+        seen = set()
+
+        def _add_candidate(group_name: str, profile, reason: str):
+            if profile is None:
+                return
+            code_hash = str(profile.code_hash)
+            if not code_hash or group_name in seen:
+                return
+            seen.add(group_name)
+            candidates.append(
+                {
+                    "group_name": group_name,
+                    "heuristic_id": profile.heuristic_id,
+                    "code_hash": code_hash,
+                    "fitness": profile.scalar_fitness,
+                    "reason": reason,
+                    "summary": profile.summary,
+                    "behavior_snippet": {
+                        "fragmentation": _metric(profile, "resource_utilization.fragmentation_index"),
+                        "early_opening": _metric(profile, "temporal_behavior.resource_opening_rate_early"),
+                        "choice_entropy": _metric(profile, "decision_pattern.choice_entropy"),
+                        "order_sensitivity": _metric(profile, "robustness.order_sensitivity"),
+                        "simplicity": _metric(profile, "structure.simplicity_index"),
+                    },
+                }
+            )
+
+        _add_candidate("current_best", best, "Best current scalar fitness.")
+        distinct = max(sorted_profiles[1:] or [best], key=_distance_from_best)
+        _add_candidate("behaviorally_distinct_runner_up", distinct, "Behaviorally distinct from current_best.")
+        robust = min(sorted_profiles, key=lambda p: (_metric(p, "robustness.order_sensitivity", 1.0) + _metric(p, "robustness.holdout_gap", 1.0), _metric(p, "resource_utilization.fragmentation_index", 1.0)))
+        _add_candidate("robust_runner_up", robust, "Lowest order_sensitivity plus holdout_gap.")
+        low_frag = min(sorted_profiles, key=lambda p: (_metric(p, "resource_utilization.fragmentation_index", 1.0), p.scalar_fitness if p.scalar_fitness is not None else float("inf")))
+        _add_candidate("low_fragmentation_candidate", low_frag, "Low residual fragmentation.")
+        low_order = min(sorted_profiles, key=lambda p: (_metric(p, "robustness.order_sensitivity", 1.0), p.scalar_fitness if p.scalar_fitness is not None else float("inf")))
+        _add_candidate("low_order_sensitivity_candidate", low_order, "Low order sensitivity.")
+        simple = max(sorted_profiles, key=lambda p: (_metric(p, "structure.simplicity_index", 0.0), -_metric(p, "structure.parameter_count", 999.0)))
+        _add_candidate("simple_candidate", simple, "High simplicity index.")
+        return candidates
+
+    def _memory_query_text(
+        self,
+        diagnosis: Dict[str, Any],
+        evidence: Dict[str, Any],
+        search_regime: Dict[str, Any],
+    ) -> str:
+        labels = []
+        for item in diagnosis.get("diagnoses", []) if isinstance(diagnosis.get("diagnoses"), list) else []:
+            if isinstance(item, dict):
+                labels.append(str(item.get("label", "")))
+        focus = diagnosis.get("recommended_focus", []) if isinstance(diagnosis.get("recommended_focus"), list) else []
+        evidence_lines = []
+        for item in diagnosis.get("diagnoses", []) if isinstance(diagnosis.get("diagnoses"), list) else []:
+            if isinstance(item, dict):
+                evidence_lines.extend(str(line) for line in item.get("evidence", [])[:2])
+        return " ".join(
+            [search_regime.get("name", "")]
+            + labels[:4]
+            + [str(x) for x in focus[:4]]
+            + evidence_lines[:6]
+            + list((evidence.get("metric_interpretations", {}) or {}).values())[:4]
+        )
+
+    def _retrieve_memory_context(
+        self,
+        diagnosis: Dict[str, Any],
+        evidence: Dict[str, Any],
+        search_regime: Dict[str, Any],
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        query = self._memory_query_text(diagnosis, evidence, search_regime)
+        retrieved = self.memory.retrieve(query, limit=limit)
+        out = []
+        for item in retrieved:
+            out.append(
+                {
+                    "kind": item.get("kind", ""),
+                    "score": item.get("_retrieval_score", 0.0),
+                    "payload": item.get("payload", {}) if isinstance(item.get("payload"), dict) else {},
+                }
+            )
+        return out
+
+    def _action_ontology_summary(self) -> Dict[str, List[str]]:
+        return {
+            family: [spec.name for spec in self.action_registry.by_family(family)]
+            for family in ["evolutionary", "corrective", "evaluation", "search_structure", "memory"]
+        }
+
+    def _family_soft_priors(self, search_regime: Dict[str, Any], evidence: Dict[str, Any]) -> Dict[str, float]:
+        priors = {
+            "evolutionary": 1.0,
+            "corrective": 1.0,
+            "evaluation": 0.8,
+            "search_structure": 0.8,
+            "memory": 0.4,
+        }
+        regime_name = str(search_regime.get("name", ""))
+        if regime_name == "pre_breakthrough":
+            priors["evolutionary"] += 0.30
+            priors["search_structure"] += 0.15
+        elif regime_name == "post_breakthrough_refinement":
+            priors["corrective"] += 0.35
+            priors["evaluation"] += 0.15
+        elif regime_name == "stagnation_recovery":
+            priors["evolutionary"] += 0.20
+            priors["search_structure"] += 0.20
+            priors["corrective"] += 0.15
+        elif regime_name == "robustness_refinement":
+            priors["evaluation"] += 0.35
+            priors["corrective"] += 0.20
+        quality = evidence.get("evidence_quality", {}) if isinstance(evidence.get("evidence_quality"), dict) else {}
+        if quality.get("level") == "strong":
+            priors["corrective"] += 0.15
+        return priors
+
+    def _contextual_resynthesis_portfolio(
+        self,
+        diagnosis: Dict[str, Any],
+        evidence: Dict[str, Any],
+        search_regime: Dict[str, Any],
+        parent_candidates: List[Dict[str, Any]],
+        memory_context: List[Dict[str, Any]],
+        generation_index: int,
+        missing_required_metrics: Optional[List[str]] = None,
+        source: str = "diagnosis_driven_resynthesis",
+    ) -> Dict[str, Any]:
+        missing_required_metrics = list(missing_required_metrics or [])
+        diagnosis_lines = []
+        labels = []
+        for item in diagnosis.get("diagnoses", []) if isinstance(diagnosis.get("diagnoses"), list) else []:
+            if isinstance(item, dict):
+                label = str(item.get("label", ""))
+                if label:
+                    labels.append(label)
+                diagnosis_lines.append(label)
+                diagnosis_lines.extend(str(line) for line in item.get("evidence", []))
+        hypotheses = [str(item.get("hypothesis", "")) for item in diagnosis.get("hypotheses", []) if isinstance(item, dict)]
+        goals = [str(x) for x in diagnosis.get("intervention_goals", []) if str(x).strip()]
+        interpretations = list((evidence.get("metric_interpretations", {}) or {}).values())
+        memory_text = json.dumps(memory_context, ensure_ascii=True)
+        context_text = " ".join(diagnosis_lines + hypotheses + goals + interpretations + [memory_text, search_regime.get("name", "")]).lower()
+        priors = self._family_soft_priors(search_regime, evidence)
+
+        scored_actions = []
+        for action_name in self.action_registry.list():
+            spec = self.action_registry.get(action_name)
+            if spec is None:
+                continue
+            score = priors.get(spec.family, 0.5)
+            action_text = f"{action_name} {spec.description}".lower()
+            for token in context_text.split():
+                if token and token in action_text:
+                    score += 0.15
+            for mem in memory_context:
+                payload = mem.get("payload", {}) if isinstance(mem.get("payload"), dict) else {}
+                used_actions = payload.get("actions", [])
+                if action_name in used_actions:
+                    score += 0.20
+                if payload.get("fitness_delta", 0.0) and float(payload.get("fitness_delta", 0.0) or 0.0) > 0.0:
+                    score += 0.05
+            scored_actions.append((float(score), action_name, spec))
+        scored_actions.sort(key=lambda item: item[0], reverse=True)
+
+        selected = []
+        used_families = set()
+        for score, action_name, spec in scored_actions:
+            if len(selected) >= 5:
+                break
+            if spec.family in used_families and score < (selected[0]["weight"] if selected else 0.0):
+                continue
+            selected.append(
+                {
+                    "action": action_name,
+                    "weight": min(0.95, max(0.15, score / 3.0)),
+                    "payload": {},
+                    "intended_behavioral_target": goals[0] if len(goals) > 0 else (labels[0] if len(labels) > 0 else search_regime.get("name", "")),
+                    "expected_behavioral_change": interpretations[0] if len(interpretations) > 0 else "Shift the diagnosed behavior in a measurable direction.",
+                    "expected_structural_change": "Small-to-moderate structural adjustment consistent with selected action family.",
+                    "expected_fitness_effect": "Seek improvement or maintain breakthrough fitness while changing the target behavior.",
+                }
+            )
+            used_families.add(spec.family)
+
+        selected_action_names = {item["action"] for item in selected}
+        for required_family in ["evolutionary", "corrective"]:
+            if any(self.action_registry.get(name).family == required_family for name in selected_action_names if self.action_registry.get(name) is not None):
+                continue
+            for score, action_name, spec in scored_actions:
+                if spec.family != required_family or action_name in selected_action_names:
+                    continue
+                selected.append(
+                    {
+                        "action": action_name,
+                        "weight": min(0.85, max(0.15, score / 3.5)),
+                        "payload": {},
+                        "intended_behavioral_target": goals[0] if len(goals) > 0 else (labels[0] if len(labels) > 0 else search_regime.get("name", "")),
+                        "expected_behavioral_change": interpretations[0] if len(interpretations) > 0 else "Shift the diagnosed behavior in a measurable direction.",
+                        "expected_structural_change": "Small-to-moderate structural adjustment consistent with selected action family.",
+                        "expected_fitness_effect": "Seek improvement or maintain breakthrough fitness while changing the target behavior.",
+                    }
+                )
+                selected_action_names.add(action_name)
+                break
+
+        branch_candidates = []
+        if len(goals) > 1 or len(labels) > 1:
+            focus_texts = goals[:2] if len(goals) > 1 else labels[:2]
+            for idx, focus in enumerate(focus_texts[:2], start=1):
+                branch_actions = []
+                picked_groups = []
+                for candidate in parent_candidates:
+                    if focus.lower().find("robust") >= 0 and "robust" in candidate.get("group_name", ""):
+                        picked_groups.append(candidate.get("group_name"))
+                    elif focus.lower().find("fragment") >= 0 and "fragmentation" in candidate.get("group_name", ""):
+                        picked_groups.append(candidate.get("group_name"))
+                if len(picked_groups) == 0 and len(parent_candidates) > 0:
+                    picked_groups.append(parent_candidates[min(idx - 1, len(parent_candidates) - 1)].get("group_name"))
+                for item in selected[:3]:
+                    payload = dict(item.get("payload", {}))
+                    payload["parent_candidate_groups"] = picked_groups
+                    payload["parent_candidate_hashes"] = [
+                        c.get("code_hash")
+                        for c in parent_candidates
+                        if c.get("group_name") in picked_groups and c.get("code_hash")
+                    ]
+                    branch_actions.append(
+                        {
+                            "action": item["action"],
+                            "weight": max(0.10, item["weight"] * 0.8),
+                            "payload": payload,
+                            "intended_behavioral_target": focus,
+                            "expected_behavioral_change": item["expected_behavioral_change"],
+                            "expected_structural_change": item["expected_structural_change"],
+                            "expected_fitness_effect": item["expected_fitness_effect"],
+                        }
+                    )
+                branch_candidates.append(
+                    {
+                        "branch_id": f"branch_{idx}",
+                        "objective": focus,
+                        "budget_share": 0.5,
+                        "parent_candidate_groups": picked_groups,
+                        "parent_candidate_hashes": [
+                            c.get("code_hash")
+                            for c in parent_candidates
+                            if c.get("group_name") in picked_groups and c.get("code_hash")
+                        ],
+                        "interventions": branch_actions,
+                        "success_criteria": [
+                            f"Behavior target shifts: {focus}",
+                            "No invalid spike",
+                        ],
+                        "rationale": [
+                            f"Branch objective derived from diagnosis/intervention_goals: {focus}",
+                        ],
+                    }
+                )
+
+        parent_groups_used = []
+        if len(parent_candidates) > 0:
+            parent_groups_used = [c.get("group_name") for c in parent_candidates[:3] if c.get("group_name")]
+
+        rationale = [
+            f"Resynthesized from search_regime={search_regime.get('name')} with evidence_quality={((evidence.get('evidence_quality') or {}).get('level', 'unknown'))}.",
+            "Portfolio selected by ontology/memory/evidence overlap instead of generic fallback.",
+        ]
+        for diag in diagnosis.get("diagnoses", [])[:2] if isinstance(diagnosis.get("diagnoses"), list) else []:
+            if isinstance(diag, dict) and isinstance(diag.get("evidence"), list) and len(diag["evidence"]) > 0:
+                rationale.append(str(diag["evidence"][0]))
+
+        return {
+            "portfolio_id": f"port_contextual_g{generation_index}",
+            "based_on_diagnosis": diagnosis.get("diagnosis_id", "unknown"),
+            "search_regime": search_regime.get("name", "pre_breakthrough"),
+            "generation_objective": search_regime.get("rationale", "Refine search using current evidence."),
+            "interventions": selected,
+            "branches": branch_candidates,
+            "budget_allocation": {"exploration": 0.30, "exploitation": 0.45, "evaluation": 0.25},
+            "branch_policy": {
+                "mode": "parallel" if len(branch_candidates) > 1 else "single_path",
+                "branch_count": len(branch_candidates),
+            },
+            "parent_candidate_groups_used": [x for x in parent_groups_used if x],
+            "success_criteria": [
+                "Positive fitness delta or improved targeted behavior metrics.",
+                "No invalid spike.",
+            ],
+            "rationale": rationale[:6],
+            "fallback_used": False,
+            "fallback_reason": "",
+            "missing_required_metrics": missing_required_metrics,
+            "source": source,
+        }
 
     def _fallback_measurement_plan(self, observation: Dict[str, Any], generation_index: int) -> Dict[str, Any]:
         return {
@@ -387,79 +823,66 @@ class AgenticFullController(AgenticController):
             "recommended_focus": ["evolutionary.backbone_variant", "corrective.simplify_logic", "corrective.soften_thresholds"],
         }
 
-    def _diagnosis_driven_portfolio(self, diagnosis: Dict[str, Any], evidence: Dict[str, Any], generation_index: int) -> Dict[str, Any]:
-        labels = [
-            str(item.get("label", ""))
-            for item in diagnosis.get("diagnoses", [])
-            if isinstance(item, dict)
-        ]
-        interventions = [
-            {"action": "evolutionary.backbone_variant", "weight": 0.35, "payload": {}},
-            {"action": "evolutionary.parameter_tuning", "weight": 0.20, "payload": {}},
-        ]
-        rationale = []
-        if "aggressive_early_fill_with_fragmentation" in labels:
-            interventions.extend(
-                [
-                    {"action": "corrective.soften_thresholds", "weight": 0.70, "payload": {}},
-                    {"action": "corrective.reduce_dominant_term", "weight": 0.55, "payload": {}},
-                ]
-            )
-            rationale.append(
-                "Applied corrective.soften_thresholds due to temporal_behavior.resource_opening_rate_early and resource_utilization.fragmentation_index."
-            )
-        if "brittle_low_margin_tie_behavior" in labels:
-            interventions.extend(
-                [
-                    {"action": "corrective.adjust_tie_breaking_behavior", "weight": 0.75, "payload": {}},
-                    {"action": "corrective.preserve_motif_retune_local_component", "weight": 0.45, "payload": {}},
-                ]
-            )
-            rationale.append(
-                "Applied corrective.adjust_tie_breaking_behavior due to decision_pattern.choice_entropy and decision_pattern.score_margin_mean."
-            )
-        if "complexity_barrier_with_low_margin_decisions" in labels:
-            interventions.append({"action": "corrective.simplify_logic", "weight": 0.80, "payload": {}})
-            rationale.append(
-                "Applied corrective.simplify_logic due to structure.simplicity_index and search.stagnation_length."
-            )
-        if len(rationale) == 0:
-            rationale.append(
-                "Evidence remained usable, so portfolio was synthesized from diagnosis instead of generic fallback."
-            )
-        missing_required = self._missing_required_metrics(evidence)
-        return {
-            "portfolio_id": f"port_diagnosis_driven_g{generation_index}",
-            "based_on_diagnosis": diagnosis.get("diagnosis_id", "unknown"),
-            "generation_objective": "apply targeted corrective and evolutionary interventions",
-            "interventions": interventions,
-            "budget_allocation": {"exploration": 0.35, "exploitation": 0.40, "evaluation": 0.25},
-            "branch_policy": {"exploration_branch": 0.40, "exploitation_branch": 0.60},
-            "success_criteria": ["positive delta_best", "improved behavior metrics", "stable invalid_rate"],
-            "rationale": rationale,
-            "fallback_used": False,
-            "fallback_reason": "",
-            "missing_required_metrics": missing_required,
-            "source": "diagnosis_driven_repair",
-        }
+    def _diagnosis_driven_portfolio(
+        self,
+        diagnosis: Dict[str, Any],
+        evidence: Dict[str, Any],
+        search_regime: Dict[str, Any],
+        parent_candidates: List[Dict[str, Any]],
+        memory_context: List[Dict[str, Any]],
+        generation_index: int,
+    ) -> Dict[str, Any]:
+        return self._contextual_resynthesis_portfolio(
+            diagnosis=diagnosis,
+            evidence=evidence,
+            search_regime=search_regime,
+            parent_candidates=parent_candidates,
+            memory_context=memory_context,
+            generation_index=generation_index,
+            missing_required_metrics=self._missing_required_metrics(evidence),
+            source="diagnosis_driven_resynthesis",
+        )
 
     def _fallback_portfolio(self, diagnosis: Dict[str, Any], generation_index: int, missing_required_metrics: Optional[List[str]] = None, reason: str = "partial_behavior_evidence") -> Dict[str, Any]:
         missing_required_metrics = list(missing_required_metrics or [])
         return {
             "portfolio_id": f"port_fallback_g{generation_index}",
             "based_on_diagnosis": diagnosis.get("diagnosis_id", "unknown"),
+            "search_regime": "stagnation_recovery",
             "generation_objective": "recover progress while preserving validity",
             "interventions": [
-                {"action": "evolutionary.backbone_variant", "weight": 0.55, "payload": {}},
-                {"action": "evolutionary.parameter_tuning", "weight": 0.25, "payload": {}},
-                {"action": "evolutionary.structural_modification", "weight": 0.12, "payload": {}},
-                {"action": "evolutionary.simplification", "weight": 0.08, "payload": {}},
-                {"action": "corrective.simplify_logic", "weight": 0.5, "payload": {}},
-                {"action": "corrective.soften_thresholds", "weight": 0.4, "payload": {}},
-                {"action": "search_structure.refresh_diversity_pool", "weight": 0.3, "payload": {}},
+                {
+                    "action": "evolutionary.backbone_variant",
+                    "weight": 0.55,
+                    "payload": {},
+                    "intended_behavioral_target": "Recover movement under weak evidence.",
+                    "expected_behavioral_change": "Increase variation around current motifs.",
+                    "expected_structural_change": "Moderate structural change.",
+                    "expected_fitness_effect": "Open a new path to improvement.",
+                },
+                {
+                    "action": "evolutionary.parameter_tuning",
+                    "weight": 0.25,
+                    "payload": {},
+                    "intended_behavioral_target": "Refine score balance safely.",
+                    "expected_behavioral_change": "Small local behavior shift.",
+                    "expected_structural_change": "Low structural disruption.",
+                    "expected_fitness_effect": "Exploit safe local gains.",
+                },
+                {
+                    "action": "corrective.simplify_logic",
+                    "weight": 0.40,
+                    "payload": {},
+                    "intended_behavioral_target": "Reduce brittle complexity.",
+                    "expected_behavioral_change": "More stable decisions.",
+                    "expected_structural_change": "Simpler logic.",
+                    "expected_fitness_effect": "Improve robustness and validity.",
+                },
             ],
+            "branches": [],
             "budget_allocation": {"exploration": 0.45, "exploitation": 0.40, "evaluation": 0.15},
-            "branch_policy": {"exploration_branch": 0.45, "exploitation_branch": 0.55},
+            "branch_policy": {"mode": "single_path", "branch_count": 0},
+            "parent_candidate_groups_used": [],
             "success_criteria": ["positive delta_best", "stable invalid_rate"],
             "rationale": ["Fallback intervention portfolio under partial or invalid evidence."],
             "fallback_used": True,
@@ -473,9 +896,11 @@ class AgenticFullController(AgenticController):
             "reflection_id": f"refl_fallback_g{generation_index}",
             "based_on_portfolio": portfolio.get("portfolio_id", "unknown"),
             "outcome_summary": outcome_summary,
+            "behavioral_outcomes": outcome_summary.get("behavioral_outcomes", []) if isinstance(outcome_summary.get("behavioral_outcomes"), list) else [],
             "supported_hypotheses": [],
             "rejected_hypotheses": [],
             "observed_effects": ["fallback_reflection_generated"],
+            "tradeoffs": outcome_summary.get("behavioral_tradeoffs", []) if isinstance(outcome_summary.get("behavioral_tradeoffs"), list) else [],
             "lessons": ["Need richer outcome evidence for stronger causal conclusions."],
             "memory_updates": [
                 {
@@ -483,7 +908,10 @@ class AgenticFullController(AgenticController):
                     "payload": {
                         "diagnosis_id": diagnosis.get("diagnosis_id", "unknown"),
                         "portfolio_id": portfolio.get("portfolio_id", "unknown"),
+                        "search_regime": portfolio.get("search_regime", ""),
+                        "actions": [item.get("action") for item in portfolio.get("interventions", []) if isinstance(item, dict)],
                         "delta_best": outcome_summary.get("delta_best"),
+                        "behavioral_outcomes": outcome_summary.get("behavioral_outcomes", []),
                     },
                 }
             ],
@@ -534,11 +962,14 @@ class AgenticFullController(AgenticController):
             profiles=[p.to_dict() for p in profiles],
             generation=gen,
         )
+        evidence_dict = evidence_obj.to_dict()
+        search_regime = self._compute_search_regime(observation, evidence_dict)
+        parent_candidate_summaries = self._build_parent_candidate_summaries(profiles)
 
         analyst_prompt = ANALYST_PROMPT.format(
             OBS_JSON=json.dumps(observation, ensure_ascii=True),
             PLAN_JSON=json.dumps(measurement_plan.to_dict(), ensure_ascii=True),
-            EVIDENCE_JSON=json.dumps(evidence_obj.to_dict(), ensure_ascii=True),
+            EVIDENCE_JSON=json.dumps(evidence_dict, ensure_ascii=True),
         )
         diagnosis_raw, diagnosis_llm = self.call_llm_json(
             prompt=analyst_prompt,
@@ -549,13 +980,23 @@ class AgenticFullController(AgenticController):
             tool_name="analyst",
         )
         if not isinstance(diagnosis_raw, dict):
-            diagnosis_raw = self._fallback_diagnosis(evidence_obj.to_dict(), measurement_plan.to_dict(), gen)
+            diagnosis_raw = self._fallback_diagnosis(evidence_dict, measurement_plan.to_dict(), gen)
         diagnosis_report = DiagnosisReport(**diagnosis_raw)
+        memory_context = self._retrieve_memory_context(
+            diagnosis=diagnosis_report.to_dict(),
+            evidence=evidence_dict,
+            search_regime=search_regime,
+            limit=5,
+        )
 
         strategist_prompt = STRATEGIST_PROMPT.format(
             DIAG_JSON=json.dumps(diagnosis_report.to_dict(), ensure_ascii=True),
-            EVIDENCE_JSON=json.dumps(evidence_obj.to_dict(), ensure_ascii=True),
+            EVIDENCE_JSON=json.dumps(evidence_dict, ensure_ascii=True),
             OBS_JSON=json.dumps(observation, ensure_ascii=True),
+            SEARCH_REGIME_JSON=json.dumps(search_regime, ensure_ascii=True),
+            MEMORY_JSON=json.dumps(memory_context, ensure_ascii=True),
+            PARENT_CANDIDATES_JSON=json.dumps(parent_candidate_summaries, ensure_ascii=True),
+            ACTION_ONTOLOGY_JSON=json.dumps(self._action_ontology_summary(), ensure_ascii=True),
         )
         portfolio_raw, strategist_llm = self.call_llm_json(
             prompt=strategist_prompt,
@@ -565,11 +1006,17 @@ class AgenticFullController(AgenticController):
             mode="json",
             tool_name="strategist",
         )
-        evidence_dict = evidence_obj.to_dict()
         missing_required_metrics = self._missing_required_metrics(evidence_dict)
         if not isinstance(portfolio_raw, dict):
             if self._evidence_is_sufficient(evidence_dict):
-                portfolio_raw = self._diagnosis_driven_portfolio(diagnosis_report.to_dict(), evidence_dict, gen)
+                portfolio_raw = self._diagnosis_driven_portfolio(
+                    diagnosis_report.to_dict(),
+                    evidence_dict,
+                    search_regime,
+                    parent_candidate_summaries,
+                    memory_context,
+                    gen,
+                )
             else:
                 portfolio_raw = self._fallback_portfolio(
                     diagnosis_report.to_dict(),
@@ -619,8 +1066,11 @@ class AgenticFullController(AgenticController):
             "diagnosis_report": diagnosis_report.to_dict(),
             "intervention_portfolio": portfolio.to_dict(),
             "measurement_plan": measurement_plan.to_dict(),
-            "evidence": evidence_obj.to_dict(),
+            "evidence": evidence_dict,
             "execution_plan": execution_plan,
+            "search_regime": search_regime,
+            "memory_context": memory_context,
+            "parent_candidate_summaries": parent_candidate_summaries,
         }
 
         return {
@@ -642,6 +1092,9 @@ class AgenticFullController(AgenticController):
                 "intervention_portfolio": portfolio.to_dict(),
                 "heuristic_profiles": [p.to_dict() for p in profiles],
                 "execution_plan": execution_plan,
+                "search_regime": search_regime,
+                "memory_context": memory_context,
+                "parent_candidate_summaries": parent_candidate_summaries,
                 "memory_updates": [],
             },
             "debug": {
@@ -652,8 +1105,17 @@ class AgenticFullController(AgenticController):
                 },
                 "planner": {
                     "llm": strategist_llm,
-                    "sanitize": {"fallback_used": False, "patched": False, "patches": []},
-                    "flags": {"pure_llm_output": strategist_llm.get("success", False), "llm_output_patched": False, "fully_fallback": not strategist_llm.get("success", False), "skipped": False},
+                    "sanitize": {
+                        "fallback_used": bool(portfolio.fallback_used),
+                        "patched": bool((not strategist_llm.get("success", False)) and (not portfolio.fallback_used)),
+                        "patches": [str(portfolio.source)] if str(portfolio.source) not in ["", "llm"] else [],
+                    },
+                    "flags": {
+                        "pure_llm_output": strategist_llm.get("success", False),
+                        "llm_output_patched": bool((not strategist_llm.get("success", False)) and (not portfolio.fallback_used)),
+                        "fully_fallback": bool(portfolio.fallback_used),
+                        "skipped": False,
+                    },
                 },
                 "critic": {
                     "llm": {"success": False, "llm_success": False, "llm_mode": "disabled", "attempts": [], "retries_used": 0, "repair_used": False, "parse_ok": False, "validation_ok": False, "failure_reason": "critic_disabled", "last_errors": []},
@@ -669,6 +1131,9 @@ class AgenticFullController(AgenticController):
                     "fallback_reason": str(portfolio.fallback_reason),
                     "missing_required_metrics": list(portfolio.missing_required_metrics),
                     "source": str(portfolio.source),
+                    "search_regime": search_regime,
+                    "parent_candidate_summaries": parent_candidate_summaries,
+                    "memory_context": memory_context,
                 },
             },
         }
@@ -681,6 +1146,7 @@ class AgenticFullController(AgenticController):
         reflection_prompt = REFLECTION_PROMPT.format(
             DIAG_JSON=json.dumps(pending["diagnosis_report"], ensure_ascii=True),
             PORT_JSON=json.dumps(pending["intervention_portfolio"], ensure_ascii=True),
+            EVIDENCE_JSON=json.dumps(pending["evidence"], ensure_ascii=True),
             OUTCOME_JSON=json.dumps(outcome_summary, ensure_ascii=True),
         )
         reflection_raw, reflection_llm = self.call_llm_json(
@@ -701,6 +1167,24 @@ class AgenticFullController(AgenticController):
 
         reflection = ReflectionReport(**reflection_raw)
         updates = reflection.memory_updates if isinstance(reflection.memory_updates, list) else []
+        if len(updates) == 0:
+            updates = [
+                {
+                    "kind": "memory.update_diagnosis_action_prior",
+                    "payload": {
+                        "diagnosis_id": pending["diagnosis_report"].get("diagnosis_id", "unknown"),
+                        "portfolio_id": pending["intervention_portfolio"].get("portfolio_id", "unknown"),
+                        "search_regime": pending.get("search_regime", {}).get("name", ""),
+                        "actions": [
+                            item.get("action")
+                            for item in pending["intervention_portfolio"].get("interventions", [])
+                            if isinstance(item, dict)
+                        ],
+                        "behavioral_outcomes": reflection.behavioral_outcomes,
+                        "fitness_delta": outcome_summary.get("train_delta"),
+                    },
+                }
+            ]
         self.memory.append_many(updates)
         return {
             "reflection_report": reflection.to_dict(),
