@@ -56,6 +56,9 @@ class BehaviorEvidenceReport:
     based_on_measurement_plan: str
     generation: int
     metric_values: Dict[str, Dict[str, Any]]
+    metric_interpretations: Dict[str, str]
+    comparative_views: Dict[str, Any]
+    evidence_quality: Dict[str, Any]
     target_summaries: List[Dict[str, Any]]
     notes: List[str]
 
@@ -88,6 +91,10 @@ class InterventionPortfolio:
     branch_policy: Dict[str, Any]
     success_criteria: List[str]
     rationale: List[str]
+    fallback_used: bool = False
+    fallback_reason: str = ""
+    missing_required_metrics: List[str] = field(default_factory=list)
+    source: str = "llm"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -130,6 +137,38 @@ def validate_measurement_plan(payload: Dict[str, Any]) -> List[str]:
     return errors
 
 
+def validate_behavior_evidence_report(payload: Dict[str, Any]) -> List[str]:
+    errors = []
+    if not isinstance(payload, dict):
+        return ["behavior_evidence_report_not_object"]
+    for key in [
+        "report_id",
+        "based_on_measurement_plan",
+        "generation",
+        "metric_values",
+        "metric_interpretations",
+        "comparative_views",
+        "evidence_quality",
+        "target_summaries",
+        "notes",
+    ]:
+        if key not in payload:
+            errors.append(f"missing_{key}")
+    if not isinstance(payload.get("metric_values"), dict):
+        errors.append("metric_values_not_dict")
+    if not isinstance(payload.get("metric_interpretations"), dict):
+        errors.append("metric_interpretations_not_dict")
+    if not isinstance(payload.get("comparative_views"), dict):
+        errors.append("comparative_views_not_dict")
+    if not isinstance(payload.get("evidence_quality"), dict):
+        errors.append("evidence_quality_not_dict")
+    if not isinstance(payload.get("target_summaries"), list):
+        errors.append("target_summaries_not_list")
+    if not isinstance(payload.get("notes"), list):
+        errors.append("notes_not_list")
+    return errors
+
+
 def validate_diagnosis_report(payload: Dict[str, Any]) -> List[str]:
     errors = []
     if not isinstance(payload, dict):
@@ -165,6 +204,10 @@ def validate_intervention_portfolio(payload: Dict[str, Any]) -> List[str]:
         "branch_policy",
         "success_criteria",
         "rationale",
+        "fallback_used",
+        "fallback_reason",
+        "missing_required_metrics",
+        "source",
     ]:
         if key not in payload:
             errors.append(f"missing_{key}")
@@ -172,6 +215,8 @@ def validate_intervention_portfolio(payload: Dict[str, Any]) -> List[str]:
         errors.append("interventions_not_list")
     if not isinstance(payload.get("budget_allocation"), dict):
         errors.append("budget_allocation_not_dict")
+    if not isinstance(payload.get("missing_required_metrics"), list):
+        errors.append("missing_required_metrics_not_list")
     return errors
 
 

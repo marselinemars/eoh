@@ -70,6 +70,10 @@ def build_heuristic_profiles(population: List[Dict[str, Any]], generation_index:
     for rank, individual in enumerate(population):
         code = individual.get("code")
         algo = individual.get("algorithm")
+        other_inf = individual.get("other_inf", {}) if isinstance(individual.get("other_inf"), dict) else {}
+        trace_metrics = other_inf.get("trace_metrics", {}) if isinstance(other_inf.get("trace_metrics"), dict) else {}
+        metric_reasons = other_inf.get("metric_reasons", {}) if isinstance(other_inf.get("metric_reasons"), dict) else {}
+        instance_family_performance = other_inf.get("instance_family_performance", {}) if isinstance(other_inf.get("instance_family_performance"), dict) else {}
         complexity = {
             "structure.code_length": float(len(code)) if isinstance(code, str) else 0.0,
             "structure.ast_depth": _ast_proxy_depth(code),
@@ -85,12 +89,12 @@ def build_heuristic_profiles(population: List[Dict[str, Any]], generation_index:
             summary=str(algo) if isinstance(algo, str) else "",
             scalar_fitness=_safe_float(individual.get("objective"), default=0.0),
             complexity_metrics=complexity,
-            behavior_trace_summary={},
-            instance_family_performance={},
+            behavior_trace_summary={k: _safe_float(v, 0.0) for k, v in trace_metrics.items()},
+            instance_family_performance={k: _safe_float(v, 0.0) for k, v in instance_family_performance.items()},
             parent_lineage=[],
             generating_action=source_action,
             generation_created=int(generation_index),
-            extra={},
+            extra={"metric_reasons": metric_reasons},
         )
         profiles.append(profile)
     return profiles

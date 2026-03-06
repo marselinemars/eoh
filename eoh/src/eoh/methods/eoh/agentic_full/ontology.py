@@ -86,6 +86,7 @@ def build_default_metric_registry() -> MetricRegistry:
         ("temporal_behavior.mid_stage_aggressiveness", "temporal_behavior"),
         ("temporal_behavior.late_stage_aggressiveness", "temporal_behavior"),
         ("temporal_behavior.resource_opening_rate_early", "temporal_behavior"),
+        ("temporal_behavior.resource_opening_rate_mid", "temporal_behavior"),
         ("temporal_behavior.resource_opening_rate_late", "temporal_behavior"),
         ("temporal_behavior.commitment_stability", "temporal_behavior"),
         ("temporal_behavior.phase_shift_index", "temporal_behavior"),

@@ -160,7 +160,7 @@ class InterfaceEC():
 
         population = []
 
-        fitness = Parallel(n_jobs=n_p)(delayed(self.interface_eval.evaluate)(seed['code']) for seed in seeds)
+        evaluations = Parallel(n_jobs=n_p)(delayed(self._evaluate_candidate)(seed['code']) for seed in seeds)
 
         for i in range(len(seeds)):
             try:
@@ -171,8 +171,12 @@ class InterfaceEC():
                     'other_inf': None
                 }
 
-                obj = np.array(fitness[i])
+                eval_result = evaluations[i]
+                fitness = eval_result.get("fitness") if isinstance(eval_result, dict) else eval_result
+                obj = np.array(fitness)
                 seed_alg['objective'] = np.round(obj, 5)
+                if isinstance(eval_result, dict):
+                    seed_alg['other_inf'] = eval_result.get("details")
                 population.append(seed_alg)
 
             except Exception as e:
@@ -215,6 +219,20 @@ class InterfaceEC():
 
         return parents, offspring
 
+    def _evaluate_candidate(self, code):
+        if hasattr(self.interface_eval, "evaluate_with_details"):
+            details = self.interface_eval.evaluate_with_details(code, split="train")
+            if isinstance(details, dict):
+                return {
+                    "fitness": details.get("fitness"),
+                    "details": details,
+                }
+        fitness = self.interface_eval.evaluate(code)
+        return {
+            "fitness": fitness,
+            "details": None,
+        }
+
     def get_offspring(self, pop, operator):
         last_error = None
         for attempt in range(1, self.max_offspring_retries + 1):
@@ -250,14 +268,17 @@ class InterfaceEC():
                         break
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(self.interface_eval.evaluate, code)
-                    fitness = future.result(timeout=self.timeout)
+                    future = executor.submit(self._evaluate_candidate, code)
+                    eval_result = future.result(timeout=self.timeout)
                     future.cancel()
 
+                fitness = eval_result.get("fitness") if isinstance(eval_result, dict) else eval_result
                 if fitness is None:
                     raise RuntimeError("Evaluation returned None.")
 
                 offspring['objective'] = np.round(fitness, 5)
+                if isinstance(eval_result, dict):
+                    offspring['other_inf'] = eval_result.get("details")
                 return p, offspring
 
             except Exception as e:

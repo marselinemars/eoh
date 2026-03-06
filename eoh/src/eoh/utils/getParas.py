@@ -48,6 +48,9 @@ class Paras():
         self.holdout_instances = 64
         self.holdout_eval_interval = 1
         self.eval_parallel_instances = 1
+        self.bp_trace_probe_instances = 8
+        self.bp_order_probe_instances = 4
+        self.bp_holdout_probe_instances = 8
 
         #####################
         ###  Run mode / logging ###

@@ -324,6 +324,28 @@ class EOH:
             return None
         return float(np.mean(np.array(lengths)))
 
+    def _behavior_metric_from_individual(self, individual, metric_name):
+        if not isinstance(individual, dict):
+            return None
+        other_inf = individual.get("other_inf", {}) if isinstance(individual.get("other_inf"), dict) else {}
+        trace_metrics = other_inf.get("trace_metrics", {}) if isinstance(other_inf.get("trace_metrics"), dict) else {}
+        return self._to_float_or_none(trace_metrics.get(metric_name))
+
+    def _best_behavior_metric(self, population, metric_name):
+        if len(population) == 0:
+            return None
+        return self._behavior_metric_from_individual(population[0], metric_name)
+
+    def _mean_behavior_metric(self, population, metric_name):
+        values = []
+        for individual in population:
+            value = self._behavior_metric_from_individual(individual, metric_name)
+            if value is not None:
+                values.append(float(value))
+        if len(values) == 0:
+            return None
+        return float(np.mean(np.array(values)))
+
     def _safe_float(self, value, default=0.0):
         try:
             return float(value)
@@ -453,6 +475,22 @@ class EOH:
                 "instances": int(eval_instances_per_gen),
                 "holdout_instances": int(holdout_instances),
             },
+            "mean_residual_ratio": self._best_behavior_metric(population, "resource_utilization.mean_residual_ratio"),
+            "residual_variance": self._best_behavior_metric(population, "resource_utilization.residual_variance"),
+            "fragmentation_index": self._best_behavior_metric(population, "resource_utilization.fragmentation_index"),
+            "resource_opening_rate_early": self._best_behavior_metric(population, "temporal_behavior.resource_opening_rate_early"),
+            "resource_opening_rate_mid": self._best_behavior_metric(population, "temporal_behavior.resource_opening_rate_mid"),
+            "resource_opening_rate_late": self._best_behavior_metric(population, "temporal_behavior.resource_opening_rate_late"),
+            "phase_shift_index": self._best_behavior_metric(population, "temporal_behavior.phase_shift_index"),
+            "extreme_option_preference": self._best_behavior_metric(population, "decision_pattern.extreme_option_preference"),
+            "choice_entropy": self._best_behavior_metric(population, "decision_pattern.choice_entropy"),
+            "score_margin_mean": self._best_behavior_metric(population, "decision_pattern.score_margin_mean"),
+            "score_margin_variance": self._best_behavior_metric(population, "decision_pattern.score_margin_variance"),
+            "order_sensitivity": self._best_behavior_metric(population, "robustness.order_sensitivity"),
+            "instance_family_variance": self._best_behavior_metric(population, "robustness.instance_family_variance"),
+            "holdout_gap": self._best_behavior_metric(population, "robustness.holdout_gap"),
+            "population_choice_entropy_mean": self._mean_behavior_metric(population, "decision_pattern.choice_entropy"),
+            "population_fragmentation_mean": self._mean_behavior_metric(population, "resource_utilization.fragmentation_index"),
             "notes": f"mode={self.mode}",
         }
         return observation
@@ -740,6 +778,7 @@ class EOH:
             diag_debug = {}
             plan_debug = {}
             critic_debug = {}
+            artifacts = {}
 
             if self.mode in ["routed", "agentic_full"]:
                 if self.controller is not None:
@@ -953,6 +992,7 @@ class EOH:
                                     "gen": int(pop + 1),
                                     "mode": self.mode,
                                     "record": artifacts.get("behavior_evidence"),
+                                    "evidence_quality": artifacts.get("behavior_evidence", {}).get("evidence_quality", {}),
                                 }
                             )
                         if isinstance(artifacts.get("diagnosis_report"), dict):
@@ -969,6 +1009,11 @@ class EOH:
                                     "gen": int(pop + 1),
                                     "mode": self.mode,
                                     "record": artifacts.get("intervention_portfolio"),
+                                    "fallback_used": bool(artifacts.get("intervention_portfolio", {}).get("fallback_used", False)),
+                                    "fallback_reason": str(artifacts.get("intervention_portfolio", {}).get("fallback_reason", "")),
+                                    "missing_required_metrics": artifacts.get("intervention_portfolio", {}).get("missing_required_metrics", []),
+                                    "portfolio_source": str(artifacts.get("intervention_portfolio", {}).get("source", "")),
+                                    "execution_plan": artifacts.get("execution_plan", {}),
                                 }
                             )
                         if isinstance(artifacts.get("heuristic_profiles"), list):
@@ -1229,6 +1274,21 @@ class EOH:
                 "critic_llm_success": bool(critic_debug.get("llm", {}).get("llm_success", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
                 "critic_parse_ok": bool(critic_debug.get("llm", {}).get("parse_ok", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
                 "critic_validation_ok": bool(critic_debug.get("llm", {}).get("validation_ok", False)) if self.mode in ["routed", "agentic_full"] and self.controller is not None else False,
+                "evidence_quality_level": (
+                    artifacts.get("behavior_evidence", {}).get("evidence_quality", {}).get("level")
+                    if self.mode == "agentic_full" and isinstance(artifacts, dict)
+                    else None
+                ),
+                "portfolio_fallback_used": (
+                    bool(artifacts.get("intervention_portfolio", {}).get("fallback_used", False))
+                    if self.mode == "agentic_full" and isinstance(artifacts, dict)
+                    else False
+                ),
+                "portfolio_source": (
+                    str(artifacts.get("intervention_portfolio", {}).get("source", ""))
+                    if self.mode == "agentic_full" and isinstance(artifacts, dict)
+                    else ""
+                ),
             }
             self._write_run_log(run_record)
 
