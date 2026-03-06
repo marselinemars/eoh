@@ -265,6 +265,11 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         self._log_parse_event("parse_fallback", error=str(last_err))
         return [self._fallback_code(), "Fallback valid heuristic"]
 
+    def generate_from_prompt(self, prompt_content):
+        if self.debug_mode:
+            print("\n >>> custom planner prompt:\n", prompt_content)
+        return self._get_alg(prompt_content)
+
 
     def i1(self):
 

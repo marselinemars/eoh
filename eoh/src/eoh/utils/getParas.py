@@ -47,11 +47,13 @@ class Paras():
         self.eval_instances_per_gen = None
         self.holdout_instances = 64
         self.holdout_eval_interval = 1
+        self.planner_profile_train_instances = 8
+        self.planner_profile_holdout_instances = 8
 
         #####################
         ###  Run mode / logging ###
         #####################
-        self.eoh_mode = "baseline"  # baseline | routed
+        self.eoh_mode = "baseline"  # baseline | routed | population_planner
         self.route_improvement_epsilon = 1e-12
         self.route_stagnation_k = 3
         self.route_invalid_rate_threshold = 0.5
@@ -63,6 +65,7 @@ class Paras():
         self.route_e2_recent_k = 3
         self.route_use_probabilistic = True
         self.log_full_population = False
+        self.planner_view_size = 8
 
 
     def set_parallel(self):

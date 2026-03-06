@@ -28,6 +28,16 @@ class InterfaceEC():
         self.timeout = timeout
         self.use_numba = use_numba
         self.max_offspring_retries = int(os.getenv("EOH_OFFSPRING_RETRIES", "4"))
+
+    def _apply_numba_if_needed(self, code):
+        if not self.use_numba:
+            return code
+        pattern = r"def\s+(\w+)\s*\(.*\):"
+        match = re.search(pattern, code)
+        if match is None:
+            raise RuntimeError("No function definition found in generated code.")
+        function_name = match.group(1)
+        return add_numba_decorator(program=code, function_name=function_name)
         
     def code2file(self,code):
         with open("./ael_alg.py", "w") as file:
@@ -137,16 +147,7 @@ class InterfaceEC():
         for attempt in range(1, self.max_offspring_retries + 1):
             try:
                 p, offspring = self._get_alg(pop, operator)
-
-                if self.use_numba:
-                    pattern = r"def\s+(\w+)\s*\(.*\):"
-                    match = re.search(pattern, offspring['code'])
-                    if match is None:
-                        raise RuntimeError("No function definition found in generated code.")
-                    function_name = match.group(1)
-                    code = add_numba_decorator(program=offspring['code'], function_name=function_name)
-                else:
-                    code = offspring['code']
+                code = self._apply_numba_if_needed(offspring['code'])
 
                 n_retry = 1
                 while self.check_duplicate(pop, offspring['code']):
@@ -154,15 +155,7 @@ class InterfaceEC():
                     if self.debug:
                         print("duplicated code, retrying ... ")
                     p, offspring = self._get_alg(pop, operator)
-                    if self.use_numba:
-                        pattern = r"def\s+(\w+)\s*\(.*\):"
-                        match = re.search(pattern, offspring['code'])
-                        if match is None:
-                            raise RuntimeError("No function definition found in generated code.")
-                        function_name = match.group(1)
-                        code = add_numba_decorator(program=offspring['code'], function_name=function_name)
-                    else:
-                        code = offspring['code']
+                    code = self._apply_numba_if_needed(offspring['code'])
                     if n_retry > 1:
                         break
 
@@ -193,6 +186,48 @@ class InterfaceEC():
         }
         p = None
         return p, offspring
+
+    def get_offspring_from_prompt(self, pop, prompt_content):
+        last_error = None
+        for attempt in range(1, self.max_offspring_retries + 1):
+            try:
+                offspring = {
+                    'algorithm': None,
+                    'code': None,
+                    'objective': None,
+                    'other_inf': None
+                }
+                offspring['code'], offspring['algorithm'] = self.evol.generate_from_prompt(prompt_content)
+                code = self._apply_numba_if_needed(offspring['code'])
+
+                if self.check_duplicate(pop, offspring['code']):
+                    raise RuntimeError("Generated duplicate code.")
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(self.interface_eval.evaluate, code)
+                    fitness = future.result(timeout=self.timeout)
+                    future.cancel()
+
+                if fitness is None:
+                    raise RuntimeError("Evaluation returned None.")
+
+                offspring['objective'] = np.round(fitness, 5)
+                return offspring
+
+            except Exception as e:
+                last_error = e
+                if self.debug:
+                    print(f"planner offspring attempt {attempt}/{self.max_offspring_retries} failed: {e}")
+                continue
+
+        if self.debug:
+            print(f"planner offspring generation failed: {last_error}")
+        return {
+            'algorithm': None,
+            'code': None,
+            'objective': None,
+            'other_inf': None
+        }
     # def process_task(self,pop, operator):
     #     result =  None, {
     #             'algorithm': None,
