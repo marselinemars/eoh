@@ -18,6 +18,7 @@ paras.set_paras(
     planner_profile_holdout_instances=8,
     planner_view_size=8,
 )
+paras.eva_numba_decorator = False
 
 evolution = eoh.EVOL(paras)
 evolution.run()

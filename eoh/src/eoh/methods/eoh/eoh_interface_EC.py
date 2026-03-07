@@ -40,6 +40,28 @@ class InterfaceEC():
             raise RuntimeError("No function definition found in generated code.")
         function_name = match.group(1)
         return add_numba_decorator(program=code, function_name=function_name)
+
+    def _evaluate_code_with_fallback(self, raw_code):
+        candidate_codes = []
+        try:
+            candidate_codes.append(self._apply_numba_if_needed(raw_code))
+        except Exception as exc:
+            if self.debug:
+                print(f"numba decoration failed, using raw code: {exc}")
+        candidate_codes.append(raw_code)
+
+        seen = set()
+        for candidate_code in candidate_codes:
+            if candidate_code in seen:
+                continue
+            seen.add(candidate_code)
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(self.interface_eval.evaluate, candidate_code)
+                fitness = future.result(timeout=self.timeout)
+                future.cancel()
+            if fitness is not None:
+                return fitness
+        raise RuntimeError("Evaluation returned None for both numba and raw code.")
         
     def code2file(self,code):
         with open("./ael_alg.py", "w") as file:
@@ -149,7 +171,6 @@ class InterfaceEC():
         for attempt in range(1, self.max_offspring_retries + 1):
             try:
                 p, offspring = self._get_alg(pop, operator)
-                code = self._apply_numba_if_needed(offspring['code'])
 
                 n_retry = 1
                 while self.check_duplicate(pop, offspring['code']):
@@ -157,17 +178,10 @@ class InterfaceEC():
                     if self.debug:
                         print("duplicated code, retrying ... ")
                     p, offspring = self._get_alg(pop, operator)
-                    code = self._apply_numba_if_needed(offspring['code'])
                     if n_retry > 1:
                         break
 
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(self.interface_eval.evaluate, code)
-                    fitness = future.result(timeout=self.timeout)
-                    future.cancel()
-
-                if fitness is None:
-                    raise RuntimeError("Evaluation returned None.")
+                fitness = self._evaluate_code_with_fallback(offspring['code'])
 
                 offspring['objective'] = np.round(fitness, 5)
                 return p, offspring
@@ -200,18 +214,11 @@ class InterfaceEC():
                     'other_inf': None
                 }
                 offspring['code'], offspring['algorithm'] = self.evol.generate_from_prompt(prompt_content)
-                code = self._apply_numba_if_needed(offspring['code'])
 
                 if self.check_duplicate(pop, offspring['code']):
                     raise RuntimeError("Generated duplicate code.")
 
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(self.interface_eval.evaluate, code)
-                    fitness = future.result(timeout=self.timeout)
-                    future.cancel()
-
-                if fitness is None:
-                    raise RuntimeError("Evaluation returned None.")
+                fitness = self._evaluate_code_with_fallback(offspring['code'])
 
                 offspring['objective'] = np.round(fitness, 5)
                 return offspring

@@ -118,7 +118,7 @@ class Paras():
         # Initialize evaluation settings
         if self.problem == 'bp_online':
             self.eva_timeout = 20
-            self.eva_numba_decorator  = True
+            self.eva_numba_decorator  = False
         elif self.problem == 'tsp_construct':
             self.eva_timeout = 20
                 
