@@ -1,3 +1,7 @@
+DEFAULT_ENSIA_BASE_URL = "http://vllm-nodeport.vllm-ns.svc.cluster.local:8000/v1"
+DEFAULT_ENSIA_API_KEY = "my-key-ensia-2022-1030"
+DEFAULT_ENSIA_MODEL = "QuantTrio/Qwen3-VL-235B-A22B-Instruct-AWQ"
+
 
 class Paras():
     def __init__(self):
@@ -23,9 +27,9 @@ class Paras():
         #####################
         self.llm_use_local = False  # if use local model
         self.llm_local_url = None  # your local server 'http://127.0.0.1:11012/completions'
-        self.llm_api_endpoint = None # endpoint for remote LLM, e.g., api.deepseek.com
-        self.llm_api_key = None  # API key for remote LLM, e.g., sk-xxxx
-        self.llm_model = None  # model type for remote LLM, e.g., deepseek-chat
+        self.llm_api_endpoint = DEFAULT_ENSIA_BASE_URL # endpoint for remote LLM, e.g., api.deepseek.com
+        self.llm_api_key = DEFAULT_ENSIA_API_KEY  # API key for remote LLM, e.g., sk-xxxx
+        self.llm_model = DEFAULT_ENSIA_MODEL  # model type for remote LLM, e.g., deepseek-chat
 
         #####################
         ###  Exp settings  ###

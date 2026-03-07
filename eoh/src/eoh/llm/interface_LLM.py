@@ -2,7 +2,6 @@ from ..llm.api_general import InterfaceAPI
 from ..llm.api_local_llm import InterfaceLocalLLM
 import os
 import json
-import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -33,13 +32,6 @@ class InterfaceLLM:
             self.interface_llm = InterfaceLocalLLM(self.llm_local_url)
         else:
             print("remote llm api is used ...")
-            if (
-                self.api_key is None
-                or self.api_endpoint is None
-                or self.api_key == "xxx"
-                or self.api_endpoint == "xxx"
-            ):
-                raise RuntimeError("Stop with wrong API setting: Set api_endpoint and api_key.")
             self.interface_llm = InterfaceAPI(
                 self.api_endpoint,
                 self.api_key,
@@ -53,7 +45,8 @@ class InterfaceLLM:
             active_model = getattr(self.interface_llm, "active_model", self.model_LLM)
             raise RuntimeError(
                 f"Error in LLM API, wrong endpoint, key, model or local deployment. "
-                f"requested_model={self.model_LLM} active_model={active_model}"
+                f"requested_model={self.model_LLM} active_model={active_model} "
+                f"base_url={getattr(self.interface_llm, 'base_url', self.api_endpoint)}"
             )
 
     def _log_interaction(self, prompt_content, response, stage, error=None):

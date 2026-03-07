@@ -1,24 +1,45 @@
 import json
-import os
 from urllib.parse import urlparse
 
 import requests
 
+DEFAULT_ENSIA_BASE_URL = "http://vllm-nodeport.vllm-ns.svc.cluster.local:8000/v1"
+DEFAULT_ENSIA_API_KEY = "my-key-ensia-2022-1030"
+DEFAULT_ENSIA_MODEL = "QuantTrio/Qwen3-VL-235B-A22B-Instruct-AWQ"
+
 
 class InterfaceAPI:
     def __init__(self, api_endpoint, api_key, model_LLM, debug_mode):
-        self.api_endpoint = api_endpoint
-        self.api_key = api_key
-        self.model_LLM = model_LLM
+        self.api_endpoint = self._resolve_endpoint(api_endpoint)
+        self.api_key = self._resolve_api_key(api_key)
+        self.model_LLM = self._resolve_requested_model(model_LLM)
         self.debug_mode = debug_mode
         self.n_trial = 5
         self.timeout_s = 180
-        self.enable_model_fallback = os.getenv("EOH_API_MODEL_FALLBACK", "1") == "1"
-        self.base_url = self._resolve_base_url(api_endpoint)
+        self.enable_model_fallback = True
+        self.base_url = self._resolve_base_url(self.api_endpoint)
         self.chat_url = self.base_url + "/chat/completions"
         self.models_url = self.base_url + "/models"
         self.available_models = []
-        self.active_model = self._resolve_model_name(model_LLM)
+        self.active_model = self._resolve_model_name(self.model_LLM)
+
+    def _resolve_endpoint(self, api_endpoint):
+        endpoint = str(api_endpoint or "").strip()
+        if endpoint in ["", "None", "xxx"]:
+            return DEFAULT_ENSIA_BASE_URL
+        return endpoint
+
+    def _resolve_api_key(self, api_key):
+        key = str(api_key or "").strip()
+        if key in ["", "None", "xxx"]:
+            return DEFAULT_ENSIA_API_KEY
+        return key
+
+    def _resolve_requested_model(self, model_LLM):
+        model = str(model_LLM or "").strip()
+        if model in ["", "None", "xxx", "auto"]:
+            return DEFAULT_ENSIA_MODEL
+        return model
 
     def _resolve_base_url(self, api_endpoint):
         endpoint = str(api_endpoint or "").strip()
@@ -59,15 +80,12 @@ class InterfaceAPI:
             return []
 
     def _resolve_model_name(self, requested_model):
-        if not self.enable_model_fallback:
-            return requested_model
         models = self._fetch_models()
         if not models:
             return requested_model
         if requested_model in models:
             return requested_model
-        if self.debug_mode:
-            print(f"Requested model '{requested_model}' unavailable. Falling back to '{models[0]}'.")
+        print(f"Requested model '{requested_model}' unavailable. Falling back to '{models[0]}'.")
         return models[0]
 
     def _is_model_error(self, response):
@@ -94,8 +112,7 @@ class InterfaceAPI:
         fallback = models[0]
         if self.active_model == fallback:
             return False
-        if self.debug_mode:
-            print(f"Retrying with fallback model '{fallback}'.")
+        print(f"Retrying with fallback model '{fallback}'.")
         self.active_model = fallback
         return True
 
