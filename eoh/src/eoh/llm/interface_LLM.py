@@ -69,7 +69,7 @@ class InterfaceLLM:
         with self.llm_io_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
-    def get_response(self, prompt_content):
+    def get_response(self, prompt_content, request_mode=None):
         try:
             response = self.interface_llm.get_response(prompt_content)
             self._log_interaction(prompt_content, response, stage="generation")
