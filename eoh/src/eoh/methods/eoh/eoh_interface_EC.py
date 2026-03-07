@@ -32,6 +32,10 @@ class InterfaceEC():
         self.max_offspring_retries = int(os.getenv("EOH_OFFSPRING_RETRIES", "4"))
         self.parallel_backend = os.getenv("EOH_PARALLEL_BACKEND", "loky")
         self.parallel_fallback_sequential = os.getenv("EOH_PARALLEL_FALLBACK_SEQUENTIAL", "1") == "1"
+        self.generation_timeout = max(
+            int(self.timeout) + 15,
+            int(os.getenv("EOH_GENERATION_TIMEOUT_S", "900")),
+        )
         self.max_parallel_llm_requests = max(1, int(os.getenv("EOH_MAX_PARALLEL_LLM_REQUESTS", "2")))
         self.max_parallel_i1_requests = max(1, int(os.getenv("EOH_MAX_PARALLEL_I1_REQUESTS", "1")))
         self.controller_parent_mix = None
@@ -441,7 +445,7 @@ class InterfaceEC():
         try:
             results = Parallel(
                 n_jobs=parallel_jobs,
-                timeout=self.timeout + 15,
+                timeout=self.generation_timeout,
                 backend=self.parallel_backend,
                 batch_size=1,
             )(delayed(self.get_offspring)(pop, operator) for _ in range(n_targets))
@@ -483,7 +487,7 @@ class InterfaceEC():
         try:
             results = Parallel(
                 n_jobs=parallel_jobs,
-                timeout=self.timeout + 15,
+                timeout=self.generation_timeout,
                 backend=self.parallel_backend,
                 batch_size=1,
             )(delayed(self.get_offspring_from_prompt)(pop, prompt_content, parent_cards=parent_cards) for _ in range(n_targets))
