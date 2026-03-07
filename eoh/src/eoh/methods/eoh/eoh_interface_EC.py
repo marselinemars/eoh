@@ -375,7 +375,11 @@ class InterfaceEC():
             'algorithm': None,
             'code': None,
             'objective': None,
-            'other_inf': None
+            'other_inf': {
+                "generation_failed": True,
+                "failure_reason": str(last_error) if last_error is not None else "unknown_generation_failure",
+                "failure_operator": operator,
+            }
         }
         p = None
         return p, offspring, local_stats
@@ -452,7 +456,11 @@ class InterfaceEC():
             'algorithm': None,
             'code': None,
             'objective': None,
-            'other_inf': None
+            'other_inf': {
+                "generation_failed": True,
+                "failure_reason": str(last_error) if last_error is not None else "unknown_custom_generation_failure",
+                "failure_operator": "custom_prompt",
+            }
         }
         return None, offspring, local_stats
     # def process_task(self,pop, operator):

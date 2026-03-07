@@ -893,7 +893,7 @@ class EOH:
                             "intervention": item,
                         }
                     )
-                    if execution_mode == "evaluate" or operator is None or offspring_count <= 0:
+                    if execution_mode == "evaluate" or offspring_count <= 0 or (operator is None and not (isinstance(custom_prompt, str) and custom_prompt.strip())):
                         continue
                     print(f" INT: {execution_mode}, [{idx_exec + 1} / {len(intervention_queue)}], n={offspring_count} ", end="|")
                     preferred_hashes = [planner_card_map[target].code_hash for target in targets if target in planner_card_map]
@@ -920,6 +920,8 @@ class EOH:
                     generation_time_s += float(batch_stats.get("generation_time_s", 0.0) or 0.0)
                     evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)
                     invalid_before_eval_count += int(batch_stats.get("invalid_before_eval_count", 0) or 0)
+                    valid_offsprings = []
+                    invalid_offspring_count = 0
                     for off_idx, offspring in enumerate(offsprings):
                         primary_parent = target_cards[0] if len(target_cards) > 0 else None
                         parent_hashes = []
@@ -930,6 +932,30 @@ class EOH:
                                 parent_hash = self._code_hash(parent.get("code")) if isinstance(parent, dict) else None
                                 if parent_hash is not None:
                                     parent_hashes.append(parent_hash)
+                        if offspring is None or offspring.get("objective") is None or offspring.get("code") is None:
+                            invalid_offspring_count += 1
+                            failure_reason = None
+                            if isinstance(offspring, dict) and isinstance(offspring.get("other_inf"), dict):
+                                failure_reason = offspring["other_inf"].get("failure_reason")
+                            self._write_offspring_lineage_log(
+                                {
+                                    "gen": int(pop + 1),
+                                    "mode": self.mode,
+                                    "offspring_id": None,
+                                    "execution_mode": execution_mode,
+                                    "operator": operator,
+                                    "generation_backend": generation_backend,
+                                    "target_ids": parent_ids,
+                                    "fitness": None,
+                                    "fitness_delta": None,
+                                    "mean_residual_ratio_delta": None,
+                                    "fragmentation_delta": None,
+                                    "resource_opening_rate_early_delta": None,
+                                    "order_sensitivity_delta": None,
+                                    "failure_reason": failure_reason,
+                                }
+                            )
+                            continue
                         self._ensure_individual_metadata(
                             offspring,
                             generation_index=int(pop + 1),
@@ -957,15 +983,18 @@ class EOH:
                             "order_sensitivity_delta": self._behavior_delta(offspring, primary_parent, "order_sensitivity"),
                         }
                         self._write_offspring_lineage_log(lineage_record)
-                    self.add2pop(population, offsprings)
+                        valid_offsprings.append(offspring)
+                    self.add2pop(population, valid_offsprings)
                     generation_offspring.extend(offsprings)
-                    for off in offsprings:
+                    for off in valid_offsprings:
                         print(" Obj: ", off["objective"], end="|")
+                    if invalid_offspring_count > 0:
+                        print(f" Invalid: {invalid_offspring_count}", end="|")
                     size_act = min(len(population), self.pop_size)
                     population = self.manage.population_management(population, size_act)
                     best_after = self._best_objective(population)
                     n_offspring = len(offsprings)
-                    n_valid = self._count_valid(offsprings)
+                    n_valid = len(valid_offsprings)
                     n_invalid = n_offspring - n_valid
                     invalid_rate_op = (n_invalid / n_offspring) if n_offspring > 0 else 1.0
                     delta_best = None
@@ -1223,15 +1252,19 @@ class EOH:
                     generation_time_s += float(batch_stats.get("generation_time_s", 0.0) or 0.0)
                     evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)
                     invalid_before_eval_count += int(batch_stats.get("invalid_before_eval_count", 0) or 0)
-                    self.add2pop(population, offsprings)
+                    valid_offsprings = [off for off in offsprings if off is not None and off.get("objective") is not None and off.get("code") is not None]
+                    invalid_offspring_count = len(offsprings) - len(valid_offsprings)
+                    self.add2pop(population, valid_offsprings)
                     generation_offspring.extend(offsprings)
-                    for off in offsprings:
+                    for off in valid_offsprings:
                         print(" Obj: ", off["objective"], end="|")
+                    if invalid_offspring_count > 0:
+                        print(f" Invalid: {invalid_offspring_count}", end="|")
                     size_act = min(len(population), self.pop_size)
                     population = self.manage.population_management(population, size_act)
                     best_after = self._best_objective(population)
                     n_offspring = len(offsprings)
-                    n_valid = self._count_valid(offsprings)
+                    n_valid = len(valid_offsprings)
                     n_invalid = n_offspring - n_valid
                     invalid_rate_op = (n_invalid / n_offspring) if n_offspring > 0 else 1.0
                     delta_best = None
@@ -1296,15 +1329,19 @@ class EOH:
                         generation_time_s += float(batch_stats.get("generation_time_s", 0.0) or 0.0)
                         evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)
                         invalid_before_eval_count += int(batch_stats.get("invalid_before_eval_count", 0) or 0)
-                    self.add2pop(population, offsprings)
+                    valid_offsprings = [off for off in offsprings if off is not None and off.get("objective") is not None and off.get("code") is not None]
+                    invalid_offspring_count = len(offsprings) - len(valid_offsprings)
+                    self.add2pop(population, valid_offsprings)
                     generation_offspring.extend(offsprings)
-                    for off in offsprings:
+                    for off in valid_offsprings:
                         print(" Obj: ", off["objective"], end="|")
+                    if invalid_offspring_count > 0:
+                        print(f" Invalid: {invalid_offspring_count}", end="|")
                     size_act = min(len(population), self.pop_size)
                     population = self.manage.population_management(population, size_act)
                     best_after = self._best_objective(population)
                     n_offspring = len(offsprings)
-                    n_valid = self._count_valid(offsprings)
+                    n_valid = len(valid_offsprings)
                     n_invalid = n_offspring - n_valid
                     invalid_rate_op = (n_invalid / n_offspring) if n_offspring > 0 else 1.0
                     delta_best = None
