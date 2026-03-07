@@ -18,6 +18,8 @@ class InterfaceLocalLLM:
         self._temperature = float(os.getenv("EOH_LOCAL_LLM_TEMPERATURE", "0.2"))
         self._top_p = float(os.getenv("EOH_LOCAL_LLM_TOP_P", "0.95"))
         self._max_new_tokens = int(os.getenv("EOH_LOCAL_LLM_MAX_NEW_TOKENS", "512"))
+        self._max_new_tokens_code = int(os.getenv("EOH_LOCAL_LLM_MAX_NEW_TOKENS_CODE", str(self._max_new_tokens)))
+        self._max_new_tokens_json = int(os.getenv("EOH_LOCAL_LLM_MAX_NEW_TOKENS_JSON", "1400"))
         self._log_http_responses = os.getenv("EOH_LOCAL_LLM_LOG_RESPONSES", "0") == "1"
 
     def get_response(self, content: str, request_mode="code", tool_name=None, json_schema=None, stop=None) -> str:
@@ -61,12 +63,16 @@ class InterfaceLocalLLM:
         content = content.strip('\n').strip()
         if request_mode == "json":
             response_mode = "json"
+            max_new_tokens = self._max_new_tokens_json
         elif request_mode == "tool":
             response_mode = "json"
+            max_new_tokens = self._max_new_tokens_json
         elif request_mode == "code":
             response_mode = "code"
+            max_new_tokens = self._max_new_tokens_code
         else:
             response_mode = "json" if self._is_controller_json_prompt(content) else "code"
+            max_new_tokens = self._max_new_tokens_json if response_mode == "json" else self._max_new_tokens_code
         # repeat the prompt for batch inference (inorder to decease the sample delay)
         params = {
             'eoh_response_mode': response_mode,
@@ -74,7 +80,7 @@ class InterfaceLocalLLM:
             'temperature': self._temperature,
             'top_k': None,
             'top_p': self._top_p,
-            'max_new_tokens': self._max_new_tokens,
+            'max_new_tokens': max_new_tokens,
             'add_special_tokens': False,
             'skip_special_tokens': True,
         }

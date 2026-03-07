@@ -34,7 +34,8 @@ class InterfaceLLM:
             print(
                 f"local llm config: timeout_s={self.interface_llm._timeout_s}, "
                 f"max_retries={self.interface_llm._max_retries}, "
-                f"max_new_tokens={self.interface_llm._max_new_tokens}"
+                f"max_new_tokens_code={self.interface_llm._max_new_tokens_code}, "
+                f"max_new_tokens_json={self.interface_llm._max_new_tokens_json}"
             )
         else:
             print("remote llm api is used ...")
