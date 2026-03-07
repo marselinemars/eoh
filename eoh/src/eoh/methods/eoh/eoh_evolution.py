@@ -44,6 +44,7 @@ class Evolution():
         self.llm_io_dir = Path(os.getenv("EOH_LLM_IO_DIR", "./results/llm_io"))
         self.parse_log_path = self.llm_io_dir / "parse_events.jsonl"
         self.active_prompt_modifiers = []
+        self.active_experience_context = ""
         if self.log_parse_events:
             self.llm_io_dir.mkdir(parents=True, exist_ok=True)
 
@@ -58,13 +59,20 @@ class Evolution():
                 cleaned.append(text)
         self.active_prompt_modifiers = cleaned[:4]
 
+    def set_experience_context(self, context):
+        text = str(context).strip() if context is not None else ""
+        self.active_experience_context = text[:4000]
+
     def _append_additional_constraints(self, prompt_content):
-        if len(self.active_prompt_modifiers) == 0:
-            return prompt_content
-        extra = "\nADDITIONAL CONSTRAINTS FOR THIS GENERATION:\n"
-        for modifier in self.active_prompt_modifiers:
-            extra += f"- {modifier}\n"
-        return prompt_content + extra
+        out = prompt_content
+        if self.active_experience_context:
+            out += "\nRELEVANT PAST EXPERIENCE:\n" + self.active_experience_context + "\n"
+        if len(self.active_prompt_modifiers) > 0:
+            extra = "\nADDITIONAL CONSTRAINTS FOR THIS GENERATION:\n"
+            for modifier in self.active_prompt_modifiers:
+                extra += f"- {modifier}\n"
+            out += extra
+        return out
 
     def _strict_output_rules(self):
         return (

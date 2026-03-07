@@ -41,6 +41,7 @@ class InterfaceEC():
         self.controller_parent_mix = None
         self.controller_prompt_modifiers = []
         self.controller_preferred_parent_hashes = set()
+        self.controller_experience_context = ""
         self._last_batch_stats = {
             "generation_time_s": 0.0,
             "evaluation_time_s": 0.0,
@@ -56,7 +57,7 @@ class InterfaceEC():
             return f"{name}: {text}"
         return name
 
-    def set_controller_context(self, parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None):
+    def set_controller_context(self, parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None, experience_context=None):
         if isinstance(parent_mix, dict):
             self.controller_parent_mix = dict(parent_mix)
         else:
@@ -70,7 +71,9 @@ class InterfaceEC():
             self.controller_preferred_parent_hashes = {str(x).strip() for x in preferred_parent_hashes if str(x).strip()}
         else:
             self.controller_preferred_parent_hashes = set()
+        self.controller_experience_context = str(experience_context).strip() if experience_context is not None else ""
         self.evol.set_prompt_modifiers(self.controller_prompt_modifiers)
+        self.evol.set_experience_context(self.controller_experience_context)
 
     def _normalize_mix(self, mix):
         keys = ["elite", "diverse", "random"]

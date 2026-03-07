@@ -5,9 +5,11 @@ import time
 import os
 import hashlib
 import concurrent.futures
+from datetime import datetime
 
 from .eoh_interface_EC import InterfaceEC
 from .agentic_controller import AgenticController
+from .experience_memory import ExperienceEntry, ExperienceMemory
 from .population_planner import (
     PopulationPlanner,
     PopulationPlannerExecutor,
@@ -23,6 +25,7 @@ class EOH:
     def __init__(self, paras, problem, select, manage, **kwargs):
 
         self.prob = problem
+        self.problem_name = str(getattr(paras, "problem", "unknown"))
         self.select = select
         self.manage = manage
         
@@ -108,8 +111,28 @@ class EOH:
         self.executed_interventions_log_path = os.path.join(self.output_path, "results", "executed_interventions.jsonl")
         self.offspring_lineage_log_path = os.path.join(self.output_path, "results", "offspring_lineage.jsonl")
         self.behavior_metric_debug_log_path = os.path.join(self.output_path, "results", "behavior_metric_debug.jsonl")
+        self.memory_retrieval_log_path = os.path.join(self.output_path, "results", "memory_retrieval.jsonl")
+        self.memory_writes_log_path = os.path.join(self.output_path, "results", "memory_writes.jsonl")
+        self.memory_usage_summary_path = os.path.join(self.output_path, "results", "memory_usage_summary.json")
         self.planner_population_view_size = max(4, int(getattr(paras, "planner_population_view_size", 8)))
         self.planner_population_json_retries = max(1, int(getattr(paras, "planner_population_json_retries", 3)))
+        self.use_experience_memory = bool(getattr(paras, "use_experience_memory", False))
+        self.memory_mode = str(getattr(paras, "memory_mode", "off"))
+        self.memory_store_path = str(getattr(paras, "memory_store_path", "./experience_memory/experience_memory.jsonl"))
+        self.memory_top_k = max(0, int(getattr(paras, "memory_top_k", 3)))
+        self.memory_max_entries = max(1, int(getattr(paras, "memory_max_entries", 5000)))
+        self.memory_min_score = float(getattr(paras, "memory_min_score", 0.25))
+        self.memory_include_failures = bool(getattr(paras, "memory_include_failures", True))
+        self.memory_seed_top_n = max(0, int(getattr(paras, "memory_seed_top_n", 2)))
+        self.memory_read_enabled = bool(getattr(paras, "memory_read_enabled", False))
+        self.memory_write_enabled = bool(getattr(paras, "memory_write_enabled", False))
+        self.memory_reset_on_start = bool(getattr(paras, "memory_reset_on_start", False))
+        self.memory_read_only = bool(getattr(paras, "memory_read_only", False))
+        self.run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        self.experience_memory = None
+        self.memory_entries_written = 0
+        self.memory_retrieval_events = 0
+        self.memory_seeded_ids = []
 
         print("- EoH parameters loaded -")
 
@@ -145,6 +168,20 @@ class EOH:
 
         # Set a random seed
         random.seed(2024)
+
+        if self.use_experience_memory and self.memory_mode != "off":
+            self.experience_memory = ExperienceMemory(
+                store_path=self.memory_store_path,
+                max_entries=self.memory_max_entries,
+                min_score=self.memory_min_score,
+                include_failures=self.memory_include_failures,
+                read_enabled=self.memory_read_enabled,
+                write_enabled=self.memory_write_enabled,
+                read_only=self.memory_read_only,
+            )
+            if self.memory_reset_on_start and self.memory_write_enabled and not self.memory_read_only:
+                self.experience_memory.reset()
+            self.experience_memory.load()
 
     # add new individual to population
     def add2pop(self, population, offspring):
@@ -186,6 +223,10 @@ class EOH:
         with open(self.offspring_lineage_log_path, "w", encoding="utf-8") as _:
             pass
         with open(self.behavior_metric_debug_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.memory_retrieval_log_path, "w", encoding="utf-8") as _:
+            pass
+        with open(self.memory_writes_log_path, "w", encoding="utf-8") as _:
             pass
 
     def _write_run_log(self, record):
@@ -248,10 +289,224 @@ class EOH:
         with open(self.behavior_metric_debug_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
+    def _write_memory_retrieval_log(self, record):
+        with open(self.memory_retrieval_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_memory_writes_log(self, record):
+        with open(self.memory_writes_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_memory_usage_summary(self, record):
+        with open(self.memory_usage_summary_path, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2)
+
     def _code_hash(self, code):
         if code is None:
             return None
         return hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
+
+    def _problem_tag(self):
+        if self.problem_name:
+            return self.problem_name
+        return str(getattr(self.prob, "__class__", type(self.prob)).__name__).lower()
+
+    def _utc_now(self):
+        return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    def _individual_summary_text(self, individual):
+        if not isinstance(individual, dict):
+            return ""
+        algo = individual.get("algorithm")
+        if isinstance(algo, str) and algo.strip():
+            return " ".join(algo.split())[:220]
+        code = individual.get("code")
+        if not isinstance(code, str):
+            return ""
+        lines = [line.strip() for line in code.splitlines() if line.strip() and not line.strip().startswith("import ")]
+        return " ".join(lines[:3])[:220]
+
+    def _structural_stats_from_code(self, code):
+        if not isinstance(code, str):
+            return {}
+        return {
+            "code_length": len(code),
+            "line_count": len(code.splitlines()),
+            "condition_count": code.count("if "),
+            "numpy_call_count": code.count("np."),
+        }
+
+    def _memory_enabled_for_read(self):
+        return self.experience_memory is not None and self.memory_read_enabled and self.memory_mode != "off"
+
+    def _memory_enabled_for_write(self):
+        return self.experience_memory is not None and self.memory_write_enabled and not self.memory_read_only
+
+    def _memory_query_context(self, population, operator="", execution_mode="", diagnosis_label="", generation_index=0, target_cards=None):
+        best = population[0] if len(population) > 0 else None
+        best_summary = self._individual_summary_text(best)
+        top_summaries = []
+        for ind in population[: min(3, len(population))]:
+            summary = self._individual_summary_text(ind)
+            if summary:
+                top_summaries.append(summary)
+        target_text = ""
+        if isinstance(target_cards, list):
+            target_text = " ".join(
+                getattr(card, "algorithm_summary", "")[:120]
+                for card in target_cards
+                if getattr(card, "algorithm_summary", "")
+            )
+        query_text = "\n".join(
+            part for part in [
+                f"generation={int(generation_index)}",
+                f"diagnosis={diagnosis_label}",
+                f"execution_mode={execution_mode}",
+                f"operator={operator}",
+                f"best_summary={best_summary}",
+                f"population={'; '.join(top_summaries)}" if top_summaries else "",
+                f"targets={target_text}" if target_text else "",
+            ] if part
+        )
+        return {
+            "problem_tag": self._problem_tag(),
+            "operator": str(operator or execution_mode or ""),
+            "text": query_text,
+            "include_failures": self.memory_include_failures,
+            "prefer_success": True,
+        }
+
+    def _prepare_memory_context(self, population, operator="", execution_mode="", diagnosis_label="", generation_index=0, target_cards=None):
+        if not self._memory_enabled_for_read() or self.memory_top_k <= 0:
+            return ""
+        query = self._memory_query_context(
+            population=population,
+            operator=operator,
+            execution_mode=execution_mode,
+            diagnosis_label=diagnosis_label,
+            generation_index=generation_index,
+            target_cards=target_cards,
+        )
+        results = self.experience_memory.query(query, top_k=self.memory_top_k, min_score=self.memory_min_score)
+        context_text = self.experience_memory.summarize_entries(results)
+        self.memory_retrieval_events += 1 if results else 0
+        self._write_memory_retrieval_log(
+            {
+                "time": self._utc_now(),
+                "run_id": self.run_id,
+                "gen": int(generation_index),
+                "mode": self.mode,
+                "operator": operator,
+                "execution_mode": execution_mode,
+                "query": query,
+                "retrieved": [
+                    {
+                        "entry_id": item["entry"].entry_id,
+                        "candidate_id": item["entry"].candidate_id,
+                        "score": float(item["score"]),
+                        "validity": bool(item["entry"].validity),
+                        "fitness": item["entry"].fitness,
+                        "operator": item["entry"].operator,
+                        "reasons": item["reasons"],
+                    }
+                    for item in results
+                ],
+                "injected_context": context_text,
+            }
+        )
+        return context_text
+
+    def _memory_seed_candidates(self):
+        if not self._memory_enabled_for_read():
+            return []
+        if self.memory_mode != "retrieve_plus_seed" or self.memory_seed_top_n <= 0:
+            return []
+        items = self.experience_memory.query_seed_entries(self._problem_tag(), top_n=self.memory_seed_top_n)
+        seeds = []
+        used_hashes = set()
+        for item in items:
+            entry = item["entry"]
+            code_hash = self._code_hash(entry.candidate_code)
+            if code_hash is None or code_hash in used_hashes:
+                continue
+            used_hashes.add(code_hash)
+            self.memory_seeded_ids.append(entry.entry_id)
+            seeds.append(
+                {
+                    "algorithm": entry.heuristic_summary or "memory_seed",
+                    "code": entry.candidate_code,
+                }
+            )
+        return seeds
+
+    def _make_experience_entry(
+        self,
+        generation_index,
+        operator,
+        offspring,
+        parent_ids=None,
+        parent_hashes=None,
+        parent_fitness=None,
+        fitness_delta=None,
+        entered_next_population=None,
+        failure_reason=None,
+        planner_rationale=None,
+        prompt_metadata=None,
+    ):
+        if not isinstance(offspring, dict):
+            return None
+        other_inf = offspring.get("other_inf", {}) if isinstance(offspring.get("other_inf"), dict) else {}
+        candidate_id = str(other_inf.get("heuristic_id") or f"H{int(generation_index)}_{self._code_hash(offspring.get('code')) or 'none'}")
+        candidate_code = str(offspring.get("code") or "")
+        if not candidate_code and failure_reason is None:
+            failure_reason = str(other_inf.get("failure_reason") or "missing_code")
+        behavior_stats = other_inf.get("trace_metrics", {}) if isinstance(other_inf.get("trace_metrics"), dict) else {}
+        entry_id = hashlib.sha1(
+            f"{self.run_id}|{generation_index}|{candidate_id}|{operator}|{self._code_hash(candidate_code) or 'none'}".encode("utf-8")
+        ).hexdigest()[:16]
+        return ExperienceEntry(
+            entry_id=entry_id,
+            run_id=self.run_id,
+            generation_index=int(generation_index),
+            parent_ids=list(parent_ids or []),
+            parent_hashes=list(parent_hashes or []),
+            candidate_id=candidate_id,
+            candidate_code=candidate_code,
+            operator=str(operator or ""),
+            fitness=self._to_float_or_none(offspring.get("objective")),
+            validity=bool(offspring.get("objective") is not None and offspring.get("code") is not None and not failure_reason),
+            timestamp=self._utc_now(),
+            problem_tag=self._problem_tag(),
+            heuristic_summary=self._individual_summary_text(offspring),
+            structural_stats=self._structural_stats_from_code(candidate_code),
+            behavior_stats=behavior_stats,
+            diagnosis_text=str(other_inf.get("planner_instruction") or ""),
+            parent_fitness=self._to_float_or_none(parent_fitness),
+            fitness_delta=self._to_float_or_none(fitness_delta),
+            entered_next_population=entered_next_population,
+            failure_reason=failure_reason,
+            planner_rationale=planner_rationale,
+            prompt_metadata=dict(prompt_metadata or {}),
+            extra={
+                "mode": self.mode,
+                "lineage": other_inf.get("lineage", {}),
+                "metric_reasons": other_inf.get("metric_reasons", {}),
+            },
+        )
+
+    def _store_experience_entry(self, entry):
+        if entry is None or not self._memory_enabled_for_write():
+            return
+        written = self.experience_memory.add_entry(entry)
+        if written:
+            self.memory_entries_written += 1
+            self._write_memory_writes_log(
+                {
+                    "time": self._utc_now(),
+                    "run_id": self.run_id,
+                    "entry": entry.to_dict(),
+                }
+            )
 
     def _ensure_individual_metadata(self, individual, generation_index, created_by="seed", parent_ids=None, parent_hashes=None, note=""):
         if not isinstance(individual, dict):
@@ -910,7 +1165,27 @@ class EOH:
                 n_start = self.load_pop_id
             else:  # create new population
                 print("creating initial population:")
+                memory_seed_population = []
+                memory_seed_payloads = self._memory_seed_candidates()
+                if memory_seed_payloads:
+                    memory_seed_population = interface_ec.population_generation_seed(memory_seed_payloads, self.exp_n_proc)
+                    self._ensure_population_metadata(memory_seed_population, generation_index=0, created_by="memory_seed")
+                init_memory_context = self._prepare_memory_context(
+                    population=population,
+                    operator="i1",
+                    execution_mode="initial_population",
+                    diagnosis_label="INIT",
+                    generation_index=0,
+                )
+                interface_ec.set_controller_context(
+                    parent_mix=None,
+                    prompt_modifiers=None,
+                    preferred_parent_hashes=None,
+                    experience_context=init_memory_context,
+                )
                 population = interface_ec.population_generation()
+                if len(memory_seed_population) > 0:
+                    population.extend(memory_seed_population)
                 population = self.manage.population_management(population, self.pop_size)
                 self._ensure_population_metadata(population, generation_index=0, created_by="init")
 
@@ -994,6 +1269,16 @@ class EOH:
                 card_map = {card.id: card for card in cards}
                 recent_mode_summary = self._recent_mode_summary(op_history, window=8)
                 planner_context_text = self._planner_context_text(summary, planner_cards, recent_mode_summary)
+                planner_memory_context = self._prepare_memory_context(
+                    population=population,
+                    operator="planner_population",
+                    execution_mode="planner",
+                    diagnosis_label=summary.current_search_regime,
+                    generation_index=int(pop + 1),
+                    target_cards=planner_cards,
+                )
+                if planner_memory_context:
+                    planner_context_text = planner_context_text + "\nRelevant cross-run experience:\n" + planner_memory_context
                 diagnosis_label = summary.current_search_regime.upper()
                 self._write_heuristic_cards_log(
                     {
@@ -1086,16 +1371,25 @@ class EOH:
                         continue
                     print(f" INT: {execution_mode}, [{idx_exec + 1} / {len(intervention_queue)}], n={offspring_count} ", end="|")
                     preferred_hashes = [planner_card_map[target].code_hash for target in targets if target in planner_card_map]
+                    target_cards = [planner_card_map[target] for target in targets if target in planner_card_map]
                     parent_mix = None
                     if len(preferred_hashes) > 0 and execution_mode in ["rewrite", "tune", "variant"]:
                         parent_mix = {"preferred": 0.75, "elite": 0.15, "diverse": 0.10, "random": 0.0}
+                    memory_context_text = self._prepare_memory_context(
+                        population=population,
+                        operator=str(operator or execution_mode),
+                        execution_mode=execution_mode,
+                        diagnosis_label=diagnosis_label,
+                        generation_index=int(pop + 1),
+                        target_cards=target_cards,
+                    )
                     interface_ec.set_controller_context(
                         parent_mix=parent_mix,
                         prompt_modifiers=prompt_modifiers,
                         preferred_parent_hashes=preferred_hashes,
+                        experience_context=memory_context_text,
                     )
                     best_before = self._best_objective(population)
-                    target_cards = [planner_card_map[target] for target in targets if target in planner_card_map]
                     llm_parallel_limit = 1
                     if isinstance(custom_prompt, str) and custom_prompt.strip():
                         parent_payloads, offsprings = interface_ec.get_algorithm_from_prompt(
@@ -1242,6 +1536,63 @@ class EOH:
                         print(f" NoOpReject: {noop_reject_op_count}", end="|")
                     size_act = min(len(population), self.pop_size)
                     population = self.manage.population_management(population, size_act)
+                    survivor_hashes = {
+                        self._code_hash(ind.get("code"))
+                        for ind in population
+                        if isinstance(ind, dict) and self._code_hash(ind.get("code")) is not None
+                    }
+                    for off_idx, offspring in enumerate(offsprings):
+                        raw_parents = parent_payloads[off_idx] if off_idx < len(parent_payloads) else None
+                        parent_ids = []
+                        parent_hashes = []
+                        parent_fitness = None
+                        if isinstance(raw_parents, list) and len(raw_parents) > 0:
+                            pfits = []
+                            for parent in raw_parents:
+                                if not isinstance(parent, dict):
+                                    continue
+                                p_hash = self._code_hash(parent.get("code"))
+                                if p_hash is not None:
+                                    parent_hashes.append(p_hash)
+                                p_other = parent.get("other_inf", {}) if isinstance(parent.get("other_inf"), dict) else {}
+                                p_id = p_other.get("heuristic_id")
+                                if p_id:
+                                    parent_ids.append(str(p_id))
+                                p_fit = self._to_float_or_none(parent.get("objective"))
+                                if p_fit is not None:
+                                    pfits.append(p_fit)
+                            if pfits:
+                                parent_fitness = min(pfits)
+                        failure_reason = None
+                        if offspring is None or offspring.get("objective") is None or offspring.get("code") is None:
+                            failure_reason = None
+                            if isinstance(offspring, dict) and isinstance(offspring.get("other_inf"), dict):
+                                failure_reason = offspring["other_inf"].get("failure_reason")
+                        elif isinstance(offspring, dict) and isinstance(offspring.get("other_inf"), dict):
+                            failure_reason = offspring["other_inf"].get("failure_reason")
+                        child_fit = self._to_float_or_none(offspring.get("objective")) if isinstance(offspring, dict) else None
+                        fit_delta = None
+                        if parent_fitness is not None and child_fit is not None:
+                            fit_delta = float(parent_fitness - child_fit)
+                        entry = self._make_experience_entry(
+                            generation_index=int(pop + 1),
+                            operator=str(operator or execution_mode),
+                            offspring=offspring if isinstance(offspring, dict) else {},
+                            parent_ids=parent_ids,
+                            parent_hashes=parent_hashes,
+                            parent_fitness=parent_fitness,
+                            fitness_delta=fit_delta,
+                            entered_next_population=(self._code_hash(offspring.get("code")) in survivor_hashes) if isinstance(offspring, dict) and offspring.get("code") else False,
+                            failure_reason=failure_reason,
+                            planner_rationale=str(item.get("goal", "")),
+                            prompt_metadata={
+                                "execution_mode": execution_mode,
+                                "generation_backend": generation_backend,
+                                "instruction": item.get("instruction", ""),
+                                "memory_context": memory_context_text,
+                            },
+                        )
+                        self._store_experience_entry(entry)
                     best_after = self._best_objective(population)
                     n_offspring = len(offsprings)
                     n_valid = len(valid_offsprings)
@@ -1281,7 +1632,7 @@ class EOH:
                     executed_ops.append(operator)
                     executed_deltas.append(delta_best)
                     print()
-                interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None)
+                interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None, experience_context=None)
                 last_used_ops.extend(executed_ops)
                 recent_ops.extend(executed_ops)
                 recent_deltas.extend(executed_deltas)
@@ -1504,8 +1855,20 @@ class EOH:
                 executed_deltas = []
                 for i_exec, (op_exec, planned_count) in enumerate(op_execution_plan):
                     print(f" OP: {op_exec}, [{i_exec + 1} / {len(op_execution_plan)}], n={int(planned_count)} ", end="|")
+                    memory_context_text = self._prepare_memory_context(
+                        population=population,
+                        operator=op_exec,
+                        execution_mode="routed_generation",
+                        diagnosis_label=diagnosis_label,
+                        generation_index=int(pop + 1),
+                    )
+                    interface_ec.set_controller_context(
+                        parent_mix=active_parent_mix,
+                        prompt_modifiers=active_prompt_modifiers,
+                        experience_context=memory_context_text,
+                    )
                     best_before = self._best_objective(population)
-                    _, offsprings = interface_ec.get_algorithm(population, op_exec, n_offspring=planned_count)
+                    parent_payloads, offsprings = interface_ec.get_algorithm(population, op_exec, n_offspring=planned_count)
                     batch_stats = interface_ec.get_last_batch_stats()
                     generation_time_s += float(batch_stats.get("generation_time_s", 0.0) or 0.0)
                     evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)
@@ -1520,6 +1883,56 @@ class EOH:
                         print(f" Invalid: {invalid_offspring_count}", end="|")
                     size_act = min(len(population), self.pop_size)
                     population = self.manage.population_management(population, size_act)
+                    survivor_hashes = {
+                        self._code_hash(ind.get("code"))
+                        for ind in population
+                        if isinstance(ind, dict) and self._code_hash(ind.get("code")) is not None
+                    }
+                    for off_idx, offspring in enumerate(offsprings):
+                        raw_parents = parent_payloads[off_idx] if off_idx < len(parent_payloads) else None
+                        parent_ids = []
+                        parent_hashes = []
+                        parent_fitness = None
+                        if isinstance(raw_parents, list) and len(raw_parents) > 0:
+                            pfits = []
+                            for parent in raw_parents:
+                                if not isinstance(parent, dict):
+                                    continue
+                                p_hash = self._code_hash(parent.get("code"))
+                                if p_hash is not None:
+                                    parent_hashes.append(p_hash)
+                                p_other = parent.get("other_inf", {}) if isinstance(parent.get("other_inf"), dict) else {}
+                                p_id = p_other.get("heuristic_id")
+                                if p_id:
+                                    parent_ids.append(str(p_id))
+                                p_fit = self._to_float_or_none(parent.get("objective"))
+                                if p_fit is not None:
+                                    pfits.append(p_fit)
+                            if pfits:
+                                parent_fitness = min(pfits)
+                        failure_reason = None
+                        if isinstance(offspring, dict) and isinstance(offspring.get("other_inf"), dict):
+                            failure_reason = offspring["other_inf"].get("failure_reason")
+                        child_fit = self._to_float_or_none(offspring.get("objective")) if isinstance(offspring, dict) else None
+                        fit_delta = None
+                        if parent_fitness is not None and child_fit is not None:
+                            fit_delta = float(parent_fitness - child_fit)
+                        entry = self._make_experience_entry(
+                            generation_index=int(pop + 1),
+                            operator=op_exec,
+                            offspring=offspring if isinstance(offspring, dict) else {},
+                            parent_ids=parent_ids,
+                            parent_hashes=parent_hashes,
+                            parent_fitness=parent_fitness,
+                            fitness_delta=fit_delta,
+                            entered_next_population=(self._code_hash(offspring.get("code")) in survivor_hashes) if isinstance(offspring, dict) and offspring.get("code") else False,
+                            failure_reason=failure_reason,
+                            prompt_metadata={
+                                "execution_mode": "routed_generation",
+                                "memory_context": memory_context_text,
+                            },
+                        )
+                        self._store_experience_entry(entry)
                     best_after = self._best_objective(population)
                     n_offspring = len(offsprings)
                     n_valid = len(valid_offsprings)
@@ -1571,7 +1984,7 @@ class EOH:
                 elif e1_cooldown_remaining > 0:
                     e1_cooldown_remaining -= 1
             else:
-                interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None)
+                interface_ec.set_controller_context(parent_mix=None, prompt_modifiers=None, experience_context=None)
                 diagnosis_label = "BASELINE_SCHEDULE"
                 chosen_operator = "schedule:" + ",".join(self.operators)
                 for i in range(n_op):
@@ -1582,11 +1995,25 @@ class EOH:
                     best_before = self._best_objective(population)
                     executed = np.random.rand() < op_w
                     if executed:
-                        _, offsprings = interface_ec.get_algorithm(population, op)
+                        memory_context_text = self._prepare_memory_context(
+                            population=population,
+                            operator=op,
+                            execution_mode="baseline_generation",
+                            diagnosis_label=diagnosis_label,
+                            generation_index=int(pop + 1),
+                        )
+                        interface_ec.set_controller_context(
+                            parent_mix=None,
+                            prompt_modifiers=None,
+                            experience_context=memory_context_text,
+                        )
+                        parent_payloads, offsprings = interface_ec.get_algorithm(population, op)
                         batch_stats = interface_ec.get_last_batch_stats()
                         generation_time_s += float(batch_stats.get("generation_time_s", 0.0) or 0.0)
                         evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)
                         invalid_before_eval_count += int(batch_stats.get("invalid_before_eval_count", 0) or 0)
+                    else:
+                        parent_payloads = []
                     valid_offsprings = [off for off in offsprings if off is not None and off.get("objective") is not None and off.get("code") is not None]
                     invalid_offspring_count = len(offsprings) - len(valid_offsprings)
                     self.add2pop(population, valid_offsprings)
@@ -1597,6 +2024,56 @@ class EOH:
                         print(f" Invalid: {invalid_offspring_count}", end="|")
                     size_act = min(len(population), self.pop_size)
                     population = self.manage.population_management(population, size_act)
+                    survivor_hashes = {
+                        self._code_hash(ind.get("code"))
+                        for ind in population
+                        if isinstance(ind, dict) and self._code_hash(ind.get("code")) is not None
+                    }
+                    for off_idx, offspring in enumerate(offsprings):
+                        raw_parents = parent_payloads[off_idx] if off_idx < len(parent_payloads) else None
+                        parent_ids = []
+                        parent_hashes = []
+                        parent_fitness = None
+                        if isinstance(raw_parents, list) and len(raw_parents) > 0:
+                            pfits = []
+                            for parent in raw_parents:
+                                if not isinstance(parent, dict):
+                                    continue
+                                p_hash = self._code_hash(parent.get("code"))
+                                if p_hash is not None:
+                                    parent_hashes.append(p_hash)
+                                p_other = parent.get("other_inf", {}) if isinstance(parent.get("other_inf"), dict) else {}
+                                p_id = p_other.get("heuristic_id")
+                                if p_id:
+                                    parent_ids.append(str(p_id))
+                                p_fit = self._to_float_or_none(parent.get("objective"))
+                                if p_fit is not None:
+                                    pfits.append(p_fit)
+                            if pfits:
+                                parent_fitness = min(pfits)
+                        failure_reason = None
+                        if isinstance(offspring, dict) and isinstance(offspring.get("other_inf"), dict):
+                            failure_reason = offspring["other_inf"].get("failure_reason")
+                        child_fit = self._to_float_or_none(offspring.get("objective")) if isinstance(offspring, dict) else None
+                        fit_delta = None
+                        if parent_fitness is not None and child_fit is not None:
+                            fit_delta = float(parent_fitness - child_fit)
+                        entry = self._make_experience_entry(
+                            generation_index=int(pop + 1),
+                            operator=op,
+                            offspring=offspring if isinstance(offspring, dict) else {},
+                            parent_ids=parent_ids,
+                            parent_hashes=parent_hashes,
+                            parent_fitness=parent_fitness,
+                            fitness_delta=fit_delta,
+                            entered_next_population=(self._code_hash(offspring.get("code")) in survivor_hashes) if isinstance(offspring, dict) and offspring.get("code") else False,
+                            failure_reason=failure_reason,
+                            prompt_metadata={
+                                "execution_mode": "baseline_generation",
+                                "memory_context": memory_context_text if executed else "",
+                            },
+                        )
+                        self._store_experience_entry(entry)
                     best_after = self._best_objective(population)
                     n_offspring = len(offsprings)
                     n_valid = len(valid_offsprings)
@@ -1744,6 +2221,10 @@ class EOH:
                 "duplicate_reject_count": int(duplicate_reject_count),
                 "noop_reject_count": int(noop_reject_count),
                 "accepted_offspring_count": int(accepted_offspring_count),
+                "memory_enabled": bool(self.use_experience_memory and self.memory_mode != "off"),
+                "memory_mode": self.memory_mode,
+                "memory_entries_written_so_far": int(self.memory_entries_written),
+                "memory_retrieval_events_so_far": int(self.memory_retrieval_events),
             }
             self._write_run_log(run_record)
 
@@ -1752,4 +2233,22 @@ class EOH:
             for i in range(len(population)):
                 print(str(population[i]['objective']) + " ", end="")
             print()
+
+        self._write_memory_usage_summary(
+            {
+                "run_id": self.run_id,
+                "mode": self.mode,
+                "problem_tag": self._problem_tag(),
+                "memory_enabled": bool(self.use_experience_memory and self.memory_mode != "off"),
+                "memory_mode": self.memory_mode,
+                "memory_store_path": self.memory_store_path,
+                "memory_read_enabled": bool(self.memory_read_enabled),
+                "memory_write_enabled": bool(self.memory_write_enabled),
+                "memory_read_only": bool(self.memory_read_only),
+                "memory_entries_available": len(self.experience_memory.entries) if self.experience_memory is not None else 0,
+                "memory_entries_written": int(self.memory_entries_written),
+                "memory_retrieval_events": int(self.memory_retrieval_events),
+                "memory_seeded_ids": list(self.memory_seeded_ids),
+            }
+        )
 

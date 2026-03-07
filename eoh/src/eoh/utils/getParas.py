@@ -73,6 +73,22 @@ class Paras():
         self.planner_population_view_size = 8
         self.planner_population_json_retries = 3
 
+        #####################
+        ###  Experience memory ###
+        #####################
+        self.use_experience_memory = False
+        self.memory_mode = "off"  # off | retrieve_for_generation | retrieve_plus_seed
+        self.memory_store_path = "./experience_memory/experience_memory.jsonl"
+        self.memory_top_k = 3
+        self.memory_max_entries = 5000
+        self.memory_min_score = 0.25
+        self.memory_include_failures = True
+        self.memory_seed_top_n = 2
+        self.memory_read_enabled = False
+        self.memory_write_enabled = False
+        self.memory_reset_on_start = False
+        self.memory_read_only = False
+
 
     def set_parallel(self):
         import multiprocessing
