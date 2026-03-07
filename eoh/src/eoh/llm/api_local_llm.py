@@ -13,14 +13,17 @@ class InterfaceLocalLLM:
         self._url = url  # 'http://127.0.0.1:11045/completions'
         self._timeout_s = int(os.getenv("EOH_LOCAL_LLM_TIMEOUT_S", "180"))
         self._retry_sleep_s = float(os.getenv("EOH_LOCAL_LLM_RETRY_SLEEP_S", "1.0"))
+        self._max_retries = max(1, int(os.getenv("EOH_LOCAL_LLM_MAX_RETRIES", "3")))
         self._do_sample = os.getenv("EOH_LOCAL_LLM_DO_SAMPLE", "0") == "1"
         self._temperature = float(os.getenv("EOH_LOCAL_LLM_TEMPERATURE", "0.2"))
         self._top_p = float(os.getenv("EOH_LOCAL_LLM_TOP_P", "0.95"))
         self._max_new_tokens = int(os.getenv("EOH_LOCAL_LLM_MAX_NEW_TOKENS", "1200"))
+        self._log_http_responses = os.getenv("EOH_LOCAL_LLM_LOG_RESPONSES", "0") == "1"
 
     def get_response(self, content: str, request_mode="code", tool_name=None, json_schema=None, stop=None) -> str:
         n_try = 0
-        while True:
+        last_exc = None
+        while n_try < self._max_retries:
             try:
                 n_try += 1
                 response = self._do_request(
@@ -32,9 +35,10 @@ class InterfaceLocalLLM:
                 )
                 return response
             except Exception as exc:
+                last_exc = exc
                 print(f"Local LLM request failed (try={n_try}): {exc}")
                 time.sleep(self._retry_sleep_s)
-                continue
+        raise RuntimeError(f"Local LLM request failed after {self._max_retries} tries: {last_exc}")
 
     def _is_controller_json_prompt(self, content: str) -> bool:
         if not isinstance(content, str):
@@ -83,7 +87,8 @@ class InterfaceLocalLLM:
         }
         headers = {'Content-Type': 'application/json'}
         response = requests.post(self._url, data=json.dumps(data), headers=headers, timeout=self._timeout_s)
-        print(response)
+        if self._log_http_responses:
+            print(response)
         if response.status_code == 200:
             response = response.json()['content'][0]
             return response

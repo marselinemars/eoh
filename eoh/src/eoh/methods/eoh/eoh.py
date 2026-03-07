@@ -907,15 +907,24 @@ class EOH:
                     )
                     best_before = self._best_objective(population)
                     target_cards = [planner_card_map[target] for target in targets if target in planner_card_map]
+                    llm_parallel_limit = 2
+                    if generation_backend in ["dedicated_rewrite", "semantic_explore"]:
+                        llm_parallel_limit = 1
                     if isinstance(custom_prompt, str) and custom_prompt.strip():
                         parent_payloads, offsprings = interface_ec.get_algorithm_from_prompt(
                             population,
                             custom_prompt,
                             n_offspring=offspring_count,
                             parent_cards=[{"code": card.code} for card in target_cards if isinstance(card.code, str)],
+                            max_parallel_requests=llm_parallel_limit,
                         )
                     else:
-                        parent_payloads, offsprings = interface_ec.get_algorithm(population, operator, n_offspring=offspring_count)
+                        parent_payloads, offsprings = interface_ec.get_algorithm(
+                            population,
+                            operator,
+                            n_offspring=offspring_count,
+                            max_parallel_requests=llm_parallel_limit,
+                        )
                     batch_stats = interface_ec.get_last_batch_stats()
                     generation_time_s += float(batch_stats.get("generation_time_s", 0.0) or 0.0)
                     evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)

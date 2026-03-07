@@ -482,7 +482,7 @@ class InterfaceEC():
     #     return result
 
     
-    def get_algorithm(self, pop, operator, n_offspring=None):
+    def get_algorithm(self, pop, operator, n_offspring=None, max_parallel_requests=None):
         if n_offspring is None:
             n_targets = int(self.pop_size)
         else:
@@ -496,6 +496,11 @@ class InterfaceEC():
 
         results = []
         parallel_jobs = min(self.n_p, self.max_parallel_llm_requests)
+        if max_parallel_requests is not None:
+            try:
+                parallel_jobs = min(parallel_jobs, max(1, int(max_parallel_requests)))
+            except (TypeError, ValueError):
+                pass
         if operator == "i1":
             parallel_jobs = min(parallel_jobs, self.max_parallel_i1_requests)
         parallel_jobs = max(1, parallel_jobs)
@@ -529,7 +534,7 @@ class InterfaceEC():
         self._merge_batch_stats(stats_list)
         return out_p, out_off
 
-    def get_algorithm_from_prompt(self, pop, prompt_content, n_offspring=None, parent_cards=None):
+    def get_algorithm_from_prompt(self, pop, prompt_content, n_offspring=None, parent_cards=None, max_parallel_requests=None):
         if n_offspring is None:
             n_targets = int(self.pop_size)
         else:
@@ -542,6 +547,11 @@ class InterfaceEC():
             return [], []
 
         parallel_jobs = min(self.n_p, self.max_parallel_llm_requests)
+        if max_parallel_requests is not None:
+            try:
+                parallel_jobs = min(parallel_jobs, max(1, int(max_parallel_requests)))
+            except (TypeError, ValueError):
+                pass
         parallel_jobs = max(1, parallel_jobs)
         results = []
         try:
