@@ -100,6 +100,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
++"The new heuristic must produce materially different bin rankings across some feasible-bin cases; avoid trivial rescaling or cosmetic edits. "\
 +self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
 
@@ -118,6 +119,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
++"The new heuristic must change ranking behavior substantially relative to the provided algorithms. Do not output a cosmetic rewrite, simple threshold mask, or coefficient rescale. "\
 +self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
     
@@ -135,6 +137,7 @@ The description must be inside a brace. Thirdly, implement it in Python as a fun
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
++"The variant must preserve only the useful motif, while changing bin-ranking behavior on some feasible-bin cases. Reject trivial restatements of a parent. "\
 +self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
     
@@ -150,6 +153,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
++"The modified algorithm must alter ranking behavior on some feasible-bin cases. Do not just rewrite variable names or apply a cosmetic penalty. "\
 +self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
     
@@ -165,6 +169,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
 "+self.prompt_func_name +". This function should accept "+str(len(self.prompt_func_inputs))+" input(s): "\
 +self.joined_inputs+". The function should return "+str(len(self.prompt_func_outputs))+" output(s): "\
 +self.joined_outputs+". "+self.prompt_inout_inf+" "\
++"A pure coefficient rescale that preserves the same ranking will be rejected. Adjust parameters only if the resulting heuristic changes bin choices on some cases. "\
 +self.prompt_other_inf+"\n"+self._strict_output_rules()
         return prompt_content
     
@@ -172,7 +177,7 @@ The description must be inside a brace. Next, implement it in Python as a functi
         prompt_content = "First, you need to identify the main components in the function below. \
 Next, analyze whether any of these components can be overfit to the in-distribution instances. \
 Then, based on your analysis, simplify the components to enhance the generalization to potential out-of-distribution instances. \
-Finally, provide the revised code, keeping the function name, inputs, and outputs unchanged. \n"+indiv1['code']+"\n"\
+Finally, provide the revised code, keeping the function name, inputs, and outputs unchanged. The simplification must still change ranking behavior on some feasible-bin cases; do not return a cosmetic rewrite. \n"+indiv1['code']+"\n"\
 +self.prompt_inout_inf+"\n"+self._strict_output_rules()
         return prompt_content
 

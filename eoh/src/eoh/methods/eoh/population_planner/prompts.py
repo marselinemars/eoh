@@ -42,6 +42,8 @@ Guidelines:
 5. Slightly worse heuristics may still be useful if they represent different behaviors.
 6. Use the diagnoses as evidence, not as hard rules.
 7. Prefer concise, executable interventions.
+8. Avoid interventions that are likely to preserve the exact same bin-ranking behavior.
+9. When proposing tune, variant, or rewrite, ask for a change that would alter decisions on at least some feasible-bin cases.
 
 Problem Context:
 {PROBLEM_CONTEXT}
@@ -244,6 +246,7 @@ def build_rewrite_modifiers(goal: str, instruction: str, card: HeuristicCard) ->
         f"Instruction: {instruction}",
         f"Preserve the core motif of heuristic {card.id}.",
         f"Address this diagnosis: {card.diagnosis.summary}",
+        "The revised score must change bin ranking on some feasible-bin cases; trivial rewrites will be rejected.",
     ]
 
 
@@ -253,6 +256,8 @@ def build_tune_modifiers(goal: str, instruction: str, card: HeuristicCard) -> Li
         f"Instruction: {instruction}",
         f"Preserve the main logic of heuristic {card.id}.",
         "Adjust only coefficients or small local score components.",
+        "Do not output a coefficient change that preserves the same ranking on typical feasible-bin inputs.",
+        "The tuned heuristic must alter some bin choices relative to the parent.",
     ]
 
 
@@ -263,6 +268,8 @@ def build_variant_modifiers(goal: str, instruction: str, cards: List[HeuristicCa
         f"Instruction: {instruction}",
         f"Generate a related but meaningfully different variant inspired by: {parent_ids}.",
         "Preserve useful motifs when appropriate.",
+        "Do not return a cosmetic rewrite or simple rescaling of a parent score.",
+        "The variant must change ranking behavior on some feasible-bin cases.",
     ]
 
 
@@ -272,4 +279,5 @@ def build_explore_modifiers(goal: str, instruction: str, summary: PopulationSumm
         f"Instruction: {instruction}",
         f"Current regime: {summary.current_search_regime}.",
         "Explore a genuinely different heuristic direction while staying relevant to the problem.",
+        "Produce a scoring rule with materially different ranking behavior from the current best heuristic.",
     ]
