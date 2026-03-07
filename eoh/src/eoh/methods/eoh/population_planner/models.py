@@ -24,7 +24,8 @@ class HeuristicCard:
     parameter_count: float
     condition_count: float
     simplicity_index: float
-    behavior: Dict[str, float]
+    behavior: Dict[str, Optional[float]]
+    behavior_status: Dict[str, str]
     diagnosis: HeuristicDiagnosis
     created_by: str
     parent_ids: List[str]

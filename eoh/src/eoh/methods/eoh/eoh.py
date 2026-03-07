@@ -15,6 +15,7 @@ from .population_planner import (
     build_population_summary,
     select_planner_cards,
 )
+from .population_planner.profiler import resolve_trace_metric
 # main class for eoh
 class EOH:
 
@@ -106,6 +107,7 @@ class EOH:
         self.population_planner_output_log_path = os.path.join(self.output_path, "results", "population_planner_output.jsonl")
         self.executed_interventions_log_path = os.path.join(self.output_path, "results", "executed_interventions.jsonl")
         self.offspring_lineage_log_path = os.path.join(self.output_path, "results", "offspring_lineage.jsonl")
+        self.behavior_metric_debug_log_path = os.path.join(self.output_path, "results", "behavior_metric_debug.jsonl")
         self.planner_population_view_size = max(4, int(getattr(paras, "planner_population_view_size", 8)))
         self.planner_population_json_retries = max(1, int(getattr(paras, "planner_population_json_retries", 3)))
 
@@ -183,6 +185,8 @@ class EOH:
             pass
         with open(self.offspring_lineage_log_path, "w", encoding="utf-8") as _:
             pass
+        with open(self.behavior_metric_debug_log_path, "w", encoding="utf-8") as _:
+            pass
 
     def _write_run_log(self, record):
         with open(self.run_log_path, "a", encoding="utf-8") as f:
@@ -238,6 +242,10 @@ class EOH:
 
     def _write_offspring_lineage_log(self, record):
         with open(self.offspring_lineage_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _write_behavior_metric_debug_log(self, record):
+        with open(self.behavior_metric_debug_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
     def _code_hash(self, code):
@@ -364,7 +372,9 @@ class EOH:
             return None
         other_inf = individual.get("other_inf", {}) if isinstance(individual.get("other_inf"), dict) else {}
         trace_metrics = other_inf.get("trace_metrics", {}) if isinstance(other_inf.get("trace_metrics"), dict) else {}
-        value = trace_metrics.get(metric_name)
+        value, status, _ = resolve_trace_metric(trace_metrics, metric_name)
+        if status != "ok":
+            return None
         return self._to_float_or_none(value)
 
     def _behavior_delta(self, individual, parent_card, metric_name):
@@ -432,6 +442,21 @@ class EOH:
         if total == 0:
             return 0.0
         return float(improvements / total)
+
+    def _planner_metric_debug_record(self, individual, card, shown):
+        other_inf = individual.get("other_inf", {}) if isinstance(individual.get("other_inf"), dict) else {}
+        raw_trace = other_inf.get("trace_metrics", {}) if isinstance(other_inf.get("trace_metrics"), dict) else {}
+        return {
+            "heuristic_id": card.id,
+            "shown_to_planner": bool(shown),
+            "fitness": self._to_float_or_none(individual.get("objective")),
+            "raw_evaluator_metrics": raw_trace,
+            "stored_profile_metrics": dict(card.behavior),
+            "stored_profile_metric_status": dict(card.behavior_status),
+            "stored_profile_metric_sources": dict(card.extra.get("behavior_source_keys", {})) if isinstance(card.extra, dict) else {},
+            "final_planner_card_metrics": dict(card.behavior),
+            "final_planner_card_metric_status": dict(card.behavior_status),
+        }
 
     def _build_op_stats_k(self, op_history, window):
         stats = {op: {"calls": 0, "success_rate": 0.0, "mean_delta": 0.0, "invalid_rate": 0.0} for op in ["e1", "e2", "m1", "m2", "m3"]}
@@ -829,6 +854,7 @@ class EOH:
                 )
                 planner_cards = select_planner_cards(cards, max_cards=self.planner_population_view_size)
                 planner_card_map = {card.id: card for card in planner_cards}
+                card_map = {card.id: card for card in cards}
                 diagnosis_label = summary.current_search_regime.upper()
                 self._write_heuristic_cards_log(
                     {
@@ -836,6 +862,21 @@ class EOH:
                         "mode": self.mode,
                         "cards": [card.to_dict() for card in cards],
                         "shown_card_ids": [card.id for card in planner_cards],
+                    }
+                )
+                debug_records = []
+                for individual in population:
+                    other_inf = individual.get("other_inf", {}) if isinstance(individual.get("other_inf"), dict) else {}
+                    heuristic_id = str(other_inf.get("heuristic_id") or "")
+                    card = card_map.get(heuristic_id)
+                    if card is None:
+                        continue
+                    debug_records.append(self._planner_metric_debug_record(individual, card, heuristic_id in planner_card_map))
+                self._write_behavior_metric_debug_log(
+                    {
+                        "gen": int(pop + 1),
+                        "mode": self.mode,
+                        "heuristics": debug_records,
                     }
                 )
                 self._write_population_summary_log(

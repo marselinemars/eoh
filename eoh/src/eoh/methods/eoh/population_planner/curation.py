@@ -15,7 +15,11 @@ BEHAVIOR_DISTANCE_KEYS = [
 def _behavior_distance(a: HeuristicCard, b: HeuristicCard) -> float:
     distance = 0.0
     for key in BEHAVIOR_DISTANCE_KEYS:
-        distance += abs(float(a.behavior.get(key, 0.0) or 0.0) - float(b.behavior.get(key, 0.0) or 0.0))
+        a_val = a.behavior.get(key)
+        b_val = b.behavior.get(key)
+        if a_val is None or b_val is None:
+            continue
+        distance += abs(float(a_val) - float(b_val))
     return float(distance)
 
 
@@ -95,10 +99,24 @@ def select_planner_cards(cards: List[HeuristicCard], max_cards: int = 8) -> List
     simple_card = max(cards, key=lambda card: (card.simplicity_index, -(card.fitness or 999.0)))
     selected[simple_card.id] = simple_card
 
-    robust_card = min(cards, key=lambda card: (card.behavior.get("order_sensitivity", 0.0) + card.behavior.get("holdout_gap", 0.0), card.fitness or 999.0))
+    robust_card = min(
+        cards,
+        key=lambda card: (
+            float(card.behavior.get("order_sensitivity")) if card.behavior.get("order_sensitivity") is not None else 999.0
+        ) + (
+            float(card.behavior.get("holdout_gap")) if card.behavior.get("holdout_gap") is not None else 999.0
+        ),
+    )
     selected[robust_card.id] = robust_card
 
-    outlier = max(cards, key=lambda card: (card.behavior.get("fragmentation_index", 0.0) + card.behavior.get("resource_opening_rate_early", 0.0)))
+    outlier = max(
+        cards,
+        key=lambda card: (
+            float(card.behavior.get("fragmentation_index")) if card.behavior.get("fragmentation_index") is not None else -1.0
+        ) + (
+            float(card.behavior.get("resource_opening_rate_early")) if card.behavior.get("resource_opening_rate_early") is not None else -1.0
+        ),
+    )
     selected[outlier.id] = outlier
 
     ordered = [selected[card.id] for card in cards if card.id in selected]

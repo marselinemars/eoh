@@ -134,8 +134,15 @@ STRICT OUTPUT FORMAT (MANDATORY):
 def render_heuristic_card(card: HeuristicCard) -> str:
     b = card.behavior
     d = card.diagnosis
+    fitness_text = "missing" if card.fitness is None else f"{card.fitness:.5f}"
+    def fmt_metric(key: str) -> str:
+        status = (card.behavior_status or {}).get(key, "missing")
+        value = b.get(key)
+        if status == "ok" and value is not None:
+            return str(value)
+        return status
     return f"""Heuristic {card.id}
-fitness: {card.fitness:.5f} (rank {card.rank})
+fitness: {fitness_text} (rank {card.rank})
 
 summary:
 {card.algorithm_summary}
@@ -144,17 +151,17 @@ structure:
 complexity={card.complexity:.0f}, parameters={card.parameter_count:.0f}, conditions={card.condition_count:.0f}, simplicity_index={card.simplicity_index:.3f}
 
 behavior:
-mean_residual_ratio={b.get('mean_residual_ratio')}
-fragmentation_index={b.get('fragmentation_index')}
-open_rate_early={b.get('resource_opening_rate_early')}
-open_rate_mid={b.get('resource_opening_rate_mid')}
-open_rate_late={b.get('resource_opening_rate_late')}
-choice_entropy={b.get('choice_entropy')}
-extreme_option_preference={b.get('extreme_option_preference')}
-score_margin_mean={b.get('score_margin_mean')}
-order_sensitivity={b.get('order_sensitivity')}
-family_variance={b.get('family_variance')}
-holdout_gap={b.get('holdout_gap')}
+mean_residual_ratio={fmt_metric('mean_residual_ratio')}
+fragmentation_index={fmt_metric('fragmentation_index')}
+open_rate_early={fmt_metric('resource_opening_rate_early')}
+open_rate_mid={fmt_metric('resource_opening_rate_mid')}
+open_rate_late={fmt_metric('resource_opening_rate_late')}
+choice_entropy={fmt_metric('choice_entropy')}
+extreme_option_preference={fmt_metric('extreme_option_preference')}
+score_margin_mean={fmt_metric('score_margin_mean')}
+order_sensitivity={fmt_metric('order_sensitivity')}
+family_variance={fmt_metric('family_variance')}
+holdout_gap={fmt_metric('holdout_gap')}
 
 diagnosis:
 labels={d.labels}
@@ -191,19 +198,25 @@ def build_planner_prompt(problem_context: str, summary: PopulationSummary, cards
 
 def _behavior_summary_lines(card: HeuristicCard) -> List[str]:
     b = card.behavior
+    def fmt_metric(key: str) -> str:
+        status = (card.behavior_status or {}).get(key, "missing")
+        value = b.get(key)
+        if status == "ok" and value is not None:
+            return str(value)
+        return status
     return [
-        f"mean_residual_ratio={b.get('mean_residual_ratio')}",
-        f"fragmentation_index={b.get('fragmentation_index')}",
-        f"resource_opening_rate_early={b.get('resource_opening_rate_early')}",
-        f"resource_opening_rate_mid={b.get('resource_opening_rate_mid')}",
-        f"resource_opening_rate_late={b.get('resource_opening_rate_late')}",
-        f"choice_entropy={b.get('choice_entropy')}",
-        f"extreme_option_preference={b.get('extreme_option_preference')}",
-        f"score_margin_mean={b.get('score_margin_mean')}",
-        f"score_margin_variance={b.get('score_margin_variance')}",
-        f"order_sensitivity={b.get('order_sensitivity')}",
-        f"family_variance={b.get('family_variance')}",
-        f"holdout_gap={b.get('holdout_gap')}",
+        f"mean_residual_ratio={fmt_metric('mean_residual_ratio')}",
+        f"fragmentation_index={fmt_metric('fragmentation_index')}",
+        f"resource_opening_rate_early={fmt_metric('resource_opening_rate_early')}",
+        f"resource_opening_rate_mid={fmt_metric('resource_opening_rate_mid')}",
+        f"resource_opening_rate_late={fmt_metric('resource_opening_rate_late')}",
+        f"choice_entropy={fmt_metric('choice_entropy')}",
+        f"extreme_option_preference={fmt_metric('extreme_option_preference')}",
+        f"score_margin_mean={fmt_metric('score_margin_mean')}",
+        f"score_margin_variance={fmt_metric('score_margin_variance')}",
+        f"order_sensitivity={fmt_metric('order_sensitivity')}",
+        f"family_variance={fmt_metric('family_variance')}",
+        f"holdout_gap={fmt_metric('holdout_gap')}",
     ]
 
 

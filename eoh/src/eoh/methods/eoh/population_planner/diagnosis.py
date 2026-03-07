@@ -3,36 +3,52 @@ from typing import List
 from .models import HeuristicCard, HeuristicDiagnosis
 
 
+def _metric(card: HeuristicCard, key: str):
+    value = (card.behavior or {}).get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def diagnose_heuristic(card: HeuristicCard) -> HeuristicDiagnosis:
-    behavior = card.behavior or {}
     labels: List[str] = []
     evidence: List[str] = []
 
-    early_open = float(behavior.get("resource_opening_rate_early", 0.0) or 0.0)
-    fragmentation = float(behavior.get("fragmentation_index", 0.0) or 0.0)
-    entropy = float(behavior.get("choice_entropy", 0.0) or 0.0)
-    margin = float(behavior.get("score_margin_mean", 0.0) or 0.0)
-    order = float(behavior.get("order_sensitivity", 0.0) or 0.0)
-    holdout_gap = float(behavior.get("holdout_gap", 0.0) or 0.0)
+    early_open = _metric(card, "resource_opening_rate_early")
+    fragmentation = _metric(card, "fragmentation_index")
+    entropy = _metric(card, "choice_entropy")
+    margin = _metric(card, "score_margin_mean")
+    order = _metric(card, "order_sensitivity")
+    holdout_gap = _metric(card, "holdout_gap")
     simplicity = float(card.simplicity_index or 0.0)
 
-    if early_open >= 0.35:
+    if early_open is not None and early_open >= 0.35:
         labels.append("aggressive_early_commitment")
         evidence.append(f"resource_opening_rate_early={early_open:.4f}")
-    if fragmentation >= 0.45:
+    if fragmentation is not None and fragmentation >= 0.45:
         labels.append("high_fragmentation")
         evidence.append(f"fragmentation_index={fragmentation:.4f}")
-    if entropy <= 0.25 and margin <= 0.05:
+    if entropy is not None and margin is not None and entropy <= 0.25 and margin <= 0.05:
         labels.append("low_margin_decisions")
         evidence.append(f"choice_entropy={entropy:.4f}")
         evidence.append(f"score_margin_mean={margin:.4f}")
-    if order >= 0.08 or holdout_gap >= 0.05:
+    if (order is not None and order >= 0.08) or (holdout_gap is not None and holdout_gap >= 0.05):
         labels.append("brittle_order_sensitivity")
-        evidence.append(f"order_sensitivity={order:.4f}")
-        evidence.append(f"holdout_gap={holdout_gap:.4f}")
+        if order is not None:
+            evidence.append(f"order_sensitivity={order:.4f}")
+        if holdout_gap is not None:
+            evidence.append(f"holdout_gap={holdout_gap:.4f}")
     if simplicity >= 0.60:
         labels.append("simple_promising_motif")
         evidence.append(f"simplicity_index={simplicity:.4f}")
+
+    missing_keys = [key for key, status in (card.behavior_status or {}).items() if status != "ok"]
+    if len(labels) == 0 and len(missing_keys) >= 4:
+        labels.append("missing_behavior_signal")
+        evidence.append("behavior metrics unavailable for diagnosis")
 
     if len(labels) == 0:
         labels = ["behaviorally_neutral_candidate"]
