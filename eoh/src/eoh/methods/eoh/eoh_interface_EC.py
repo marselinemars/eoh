@@ -47,6 +47,15 @@ class InterfaceEC():
             "invalid_before_eval_count": 0,
         }
 
+    def _format_error(self, error, default="unknown_error"):
+        if error is None:
+            return default
+        name = type(error).__name__
+        text = str(error).strip()
+        if text:
+            return f"{name}: {text}"
+        return name
+
     def set_controller_context(self, parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None):
         if isinstance(parent_mix, dict):
             self.controller_parent_mix = dict(parent_mix)
@@ -377,7 +386,7 @@ class InterfaceEC():
             'objective': None,
             'other_inf': {
                 "generation_failed": True,
-                "failure_reason": str(last_error) if last_error is not None else "unknown_generation_failure",
+                "failure_reason": self._format_error(last_error, "unknown_generation_failure"),
                 "failure_operator": operator,
             }
         }
@@ -458,7 +467,7 @@ class InterfaceEC():
             'objective': None,
             'other_inf': {
                 "generation_failed": True,
-                "failure_reason": str(last_error) if last_error is not None else "unknown_custom_generation_failure",
+                "failure_reason": self._format_error(last_error, "unknown_custom_generation_failure"),
                 "failure_operator": "custom_prompt",
             }
         }

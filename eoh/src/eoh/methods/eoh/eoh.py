@@ -382,12 +382,27 @@ class EOH:
         parent = None
         if parent_card is not None:
             try:
-                parent = float(parent_card.behavior.get(metric_name, 0.0))
+                metric_value = parent_card.behavior.get(metric_name)
+                parent = None if metric_value is None else float(metric_value)
             except Exception:
                 parent = None
         if child is None or parent is None:
             return None
         return float(child - parent)
+
+    def _is_noop_relative_to_parent(self, offspring, parent_card, deltas):
+        if parent_card is None or not isinstance(offspring, dict):
+            return False
+        child_obj = self._to_float_or_none(offspring.get("objective"))
+        parent_obj = self._to_float_or_none(parent_card.fitness)
+        if child_obj is None or parent_obj is None:
+            return False
+        if abs(child_obj - parent_obj) > 1e-12:
+            return False
+        for delta in deltas:
+            if delta is not None and abs(float(delta)) > 1e-12:
+                return False
+        return True
 
     def _last_major_improvement_generation(self, best_history):
         if len(best_history) < 2:
@@ -918,6 +933,11 @@ class EOH:
                 )
                 executed_ops = []
                 executed_deltas = []
+                accepted_code_hashes = {
+                    self._code_hash(ind.get("code"))
+                    for ind in population
+                    if isinstance(ind, dict) and self._code_hash(ind.get("code")) is not None
+                }
                 for idx_exec, item in enumerate(intervention_queue):
                     execution_mode = str(item.get("execution_mode", ""))
                     targets = [str(x) for x in item.get("targets", [])]
@@ -1032,6 +1052,26 @@ class EOH:
                             "resource_opening_rate_early_delta": self._behavior_delta(offspring, primary_parent, "resource_opening_rate_early"),
                             "order_sensitivity_delta": self._behavior_delta(offspring, primary_parent, "order_sensitivity"),
                         }
+                        offspring_code_hash = self._code_hash(offspring.get("code"))
+                        metric_deltas = [
+                            lineage_record["mean_residual_ratio_delta"],
+                            lineage_record["fragmentation_delta"],
+                            lineage_record["resource_opening_rate_early_delta"],
+                            lineage_record["order_sensitivity_delta"],
+                        ]
+                        rejection_reason = None
+                        if offspring_code_hash is not None and offspring_code_hash in accepted_code_hashes:
+                            rejection_reason = "duplicate_code_in_population_or_batch"
+                        elif self._is_noop_relative_to_parent(offspring, primary_parent, metric_deltas):
+                            rejection_reason = "no_op_relative_to_parent"
+                        if rejection_reason is not None:
+                            invalid_offspring_count += 1
+                            lineage_record["offspring_id"] = None
+                            lineage_record["failure_reason"] = rejection_reason
+                            self._write_offspring_lineage_log(lineage_record)
+                            continue
+                        if offspring_code_hash is not None:
+                            accepted_code_hashes.add(offspring_code_hash)
                         self._write_offspring_lineage_log(lineage_record)
                         valid_offsprings.append(offspring)
                     self.add2pop(population, valid_offsprings)

@@ -112,12 +112,16 @@ Rewrite Guidance:
 5. Keep the function signature, inputs, and outputs unchanged.
 6. Keep the heuristic reasonably simple unless the instruction explicitly requires otherwise.
 7. If the diagnosed weakness can be improved by softening, rebalancing, simplifying, or stabilizing part of the scoring logic, prefer that over replacing the whole heuristic.
+8. Your revision will be rejected if it produces effectively the same ranking behavior as the current heuristic on typical inputs.
+9. Do NOT merely rescale the existing score, multiply it by a binary mask, or wrap it in a trivial threshold penalty without changing the ranking logic in a meaningful way.
+10. Make one focused corrective change that is specific and testable.
 
 What to optimize for:
 - maintain the strengths of the current heuristic
 - reduce the diagnosed weakness
 - improve robustness or decision quality where relevant
 - avoid destroying the successful behavior already present
+- produce a materially distinct scoring behavior, not a cosmetic rewrite
 
 STRICT OUTPUT FORMAT (MANDATORY):
 1. First line: one sentence wrapped in braces like {{your sentence}}.

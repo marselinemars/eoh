@@ -29,7 +29,7 @@ class PopulationPlannerExecutor:
             "targets": [card.id for card in targets],
             "goal": intervention.goal,
             "instruction": intervention.instruction,
-            "offspring_count": offspring_count,
+            "offspring_count": min(1, offspring_count),
             "prompt_modifiers": build_rewrite_modifiers(intervention.goal, intervention.instruction, primary)[:4],
             "custom_prompt": build_rewrite_prompt(
                 problem_context=self.problem_context,
@@ -130,14 +130,15 @@ class PopulationPlannerExecutor:
             queue.append(self._dispatch(intervention, targets, summary, count))
             remaining -= count
 
-        if remaining > 0 and len(cards) > 0:
+        executable_count = sum(1 for item in queue if int(item.get("offspring_count", 0) or 0) > 0)
+        if executable_count == 0 and len(cards) > 0:
             fallback = PlannerIntervention(
                 targets=[cards[0].id],
                 execution_mode="variant",
                 goal="Safe fallback variant from the current best heuristic.",
                 instruction="Preserve the main motif but alter one scoring component.",
-                offspring_count=remaining,
+                offspring_count=1,
                 priority="medium",
             )
-            queue.append(self.execute_variant(fallback, [cards[0]], summary, remaining))
+            queue.append(self.execute_variant(fallback, [cards[0]], summary, 1))
         return queue
