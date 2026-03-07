@@ -849,6 +849,10 @@ class EOH:
             generation_time_s = 0.0
             evaluation_time_s = 0.0
             invalid_before_eval_count = 0
+            generation_failed_count = 0
+            duplicate_reject_count = 0
+            noop_reject_count = 0
+            accepted_offspring_count = 0
             diagnoser_stage_flags = {}
             planner_stage_flags = {}
             critic_stage_flags = {}
@@ -991,7 +995,9 @@ class EOH:
                     evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)
                     invalid_before_eval_count += int(batch_stats.get("invalid_before_eval_count", 0) or 0)
                     valid_offsprings = []
-                    invalid_offspring_count = 0
+                    generation_failed_op_count = 0
+                    duplicate_reject_op_count = 0
+                    noop_reject_op_count = 0
                     for off_idx, offspring in enumerate(offsprings):
                         primary_parent = target_cards[0] if len(target_cards) > 0 else None
                         parent_hashes = []
@@ -1003,7 +1009,8 @@ class EOH:
                                 if parent_hash is not None:
                                     parent_hashes.append(parent_hash)
                         if offspring is None or offspring.get("objective") is None or offspring.get("code") is None:
-                            invalid_offspring_count += 1
+                            generation_failed_op_count += 1
+                            generation_failed_count += 1
                             failure_reason = None
                             if isinstance(offspring, dict) and isinstance(offspring.get("other_inf"), dict):
                                 failure_reason = offspring["other_inf"].get("failure_reason")
@@ -1065,7 +1072,12 @@ class EOH:
                         elif self._is_noop_relative_to_parent(offspring, primary_parent, metric_deltas):
                             rejection_reason = "no_op_relative_to_parent"
                         if rejection_reason is not None:
-                            invalid_offspring_count += 1
+                            if rejection_reason == "duplicate_code_in_population_or_batch":
+                                duplicate_reject_op_count += 1
+                                duplicate_reject_count += 1
+                            elif rejection_reason == "no_op_relative_to_parent":
+                                noop_reject_op_count += 1
+                                noop_reject_count += 1
                             lineage_record["offspring_id"] = None
                             lineage_record["failure_reason"] = rejection_reason
                             self._write_offspring_lineage_log(lineage_record)
@@ -1074,19 +1086,25 @@ class EOH:
                             accepted_code_hashes.add(offspring_code_hash)
                         self._write_offspring_lineage_log(lineage_record)
                         valid_offsprings.append(offspring)
+                        accepted_offspring_count += 1
                     self.add2pop(population, valid_offsprings)
                     generation_offspring.extend(offsprings)
                     for off in valid_offsprings:
                         print(" Obj: ", off["objective"], end="|")
-                    if invalid_offspring_count > 0:
-                        print(f" Invalid: {invalid_offspring_count}", end="|")
+                    if generation_failed_op_count > 0:
+                        print(f" Failed: {generation_failed_op_count}", end="|")
+                    if duplicate_reject_op_count > 0:
+                        print(f" DupReject: {duplicate_reject_op_count}", end="|")
+                    if noop_reject_op_count > 0:
+                        print(f" NoOpReject: {noop_reject_op_count}", end="|")
                     size_act = min(len(population), self.pop_size)
                     population = self.manage.population_management(population, size_act)
                     best_after = self._best_objective(population)
                     n_offspring = len(offsprings)
                     n_valid = len(valid_offsprings)
-                    n_invalid = n_offspring - n_valid
-                    invalid_rate_op = (n_invalid / n_offspring) if n_offspring > 0 else 1.0
+                    n_generation_failed = generation_failed_op_count
+                    n_rejected = duplicate_reject_op_count + noop_reject_op_count
+                    invalid_rate_op = (n_generation_failed / n_offspring) if n_offspring > 0 else 1.0
                     delta_best = None
                     if best_before is not None and best_after is not None:
                         delta_best = float(best_before - best_after)
@@ -1100,7 +1118,11 @@ class EOH:
                         "diagnosis_label": diagnosis_label,
                         "n_offspring": int(n_offspring),
                         "n_valid": int(n_valid),
-                        "n_invalid": int(n_invalid),
+                        "n_invalid": int(n_generation_failed),
+                        "n_generation_failed": int(n_generation_failed),
+                        "n_duplicate_reject": int(duplicate_reject_op_count),
+                        "n_noop_reject": int(noop_reject_op_count),
+                        "n_rejected_total": int(n_generation_failed + n_rejected),
                         "invalid_rate": float(invalid_rate_op),
                         "best_before": self._to_float_or_none(best_before),
                         "best_after": self._to_float_or_none(best_after),
@@ -1572,6 +1594,10 @@ class EOH:
                 "generation_time_s": float(generation_time_s),
                 "evaluation_time_s": float(evaluation_time_s),
                 "invalid_before_eval_count": int(invalid_before_eval_count),
+                "generation_failed_count": int(generation_failed_count),
+                "duplicate_reject_count": int(duplicate_reject_count),
+                "noop_reject_count": int(noop_reject_count),
+                "accepted_offspring_count": int(accepted_offspring_count),
             }
             self._write_run_log(run_record)
 
