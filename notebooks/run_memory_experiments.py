@@ -204,6 +204,18 @@ def _experiment_configs(memory_store_path: Path):
     ]
 
 
+def _selected_experiment_names():
+    raw = os.getenv("EOH_MEMORY_EXPERIMENTS", "").strip()
+    if not raw:
+        return None
+    names = []
+    for token in raw.split(","):
+        token = token.strip()
+        if token:
+            names.append(token)
+    return set(names) if names else None
+
+
 def _clean_previous_outputs(mode_root: Path):
     if mode_root.exists():
         shutil.rmtree(mode_root)
@@ -353,8 +365,15 @@ def main():
         if settings["share_initial_population"]:
             shared_seed_path = _prepare_shared_seed(out_root, bridge_url, model_id, settings, log)
 
+        selected = _selected_experiment_names()
+        all_experiments = _experiment_configs(memory_store_path)
+        if selected is not None:
+            all_experiments = [exp for exp in all_experiments if exp["name"] in selected]
+            if len(all_experiments) == 0:
+                raise RuntimeError(f"No matching experiments for EOH_MEMORY_EXPERIMENTS={sorted(selected)}")
+
         experiment_summaries = []
-        for experiment in _experiment_configs(memory_store_path):
+        for experiment in all_experiments:
             exp_root = out_root / experiment["name"]
             exp_shared_seed = shared_seed_path if experiment.get("use_shared_seed", False) else None
             run_once(
