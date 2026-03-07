@@ -805,6 +805,10 @@ class EOH:
             active_parent_mix = None
             active_prompt_modifiers = []
             active_op_probs = None
+            planner_time_s = 0.0
+            generation_time_s = 0.0
+            evaluation_time_s = 0.0
+            invalid_before_eval_count = 0
             diagnoser_stage_flags = {}
             planner_stage_flags = {}
             critic_stage_flags = {}
@@ -841,11 +845,13 @@ class EOH:
                         "summary": summary.to_dict(),
                     }
                 )
+                planner_start = time.time()
                 planner_result = self.population_planner.plan(
                     problem_context=self._problem_context_for_planner(),
                     summary=summary,
                     cards=planner_cards,
                 )
+                planner_time_s += float(time.time() - planner_start)
                 planner_output_obj = planner_result["planner_output"]
                 planner_llm_meta = planner_result["llm_meta"]
                 self._write_population_planner_output_log(
@@ -910,6 +916,10 @@ class EOH:
                         )
                     else:
                         parent_payloads, offsprings = interface_ec.get_algorithm(population, operator, n_offspring=offspring_count)
+                    batch_stats = interface_ec.get_last_batch_stats()
+                    generation_time_s += float(batch_stats.get("generation_time_s", 0.0) or 0.0)
+                    evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)
+                    invalid_before_eval_count += int(batch_stats.get("invalid_before_eval_count", 0) or 0)
                     for off_idx, offspring in enumerate(offsprings):
                         primary_parent = target_cards[0] if len(target_cards) > 0 else None
                         parent_hashes = []
@@ -1209,6 +1219,10 @@ class EOH:
                     print(f" OP: {op_exec}, [{i_exec + 1} / {len(op_execution_plan)}], n={int(planned_count)} ", end="|")
                     best_before = self._best_objective(population)
                     _, offsprings = interface_ec.get_algorithm(population, op_exec, n_offspring=planned_count)
+                    batch_stats = interface_ec.get_last_batch_stats()
+                    generation_time_s += float(batch_stats.get("generation_time_s", 0.0) or 0.0)
+                    evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)
+                    invalid_before_eval_count += int(batch_stats.get("invalid_before_eval_count", 0) or 0)
                     self.add2pop(population, offsprings)
                     generation_offspring.extend(offsprings)
                     for off in offsprings:
@@ -1278,6 +1292,10 @@ class EOH:
                     executed = np.random.rand() < op_w
                     if executed:
                         _, offsprings = interface_ec.get_algorithm(population, op)
+                        batch_stats = interface_ec.get_last_batch_stats()
+                        generation_time_s += float(batch_stats.get("generation_time_s", 0.0) or 0.0)
+                        evaluation_time_s += float(batch_stats.get("evaluation_time_s", 0.0) or 0.0)
+                        invalid_before_eval_count += int(batch_stats.get("invalid_before_eval_count", 0) or 0)
                     self.add2pop(population, offsprings)
                     generation_offspring.extend(offsprings)
                     for off in offsprings:
@@ -1423,6 +1441,10 @@ class EOH:
                 "critic_llm_success": bool(critic_debug.get("llm", {}).get("llm_success", False)) if self.mode == "routed" and self.controller is not None else False,
                 "critic_parse_ok": bool(critic_debug.get("llm", {}).get("parse_ok", False)) if self.mode == "routed" and self.controller is not None else False,
                 "critic_validation_ok": bool(critic_debug.get("llm", {}).get("validation_ok", False)) if self.mode == "routed" and self.controller is not None else False,
+                "planner_time_s": float(planner_time_s),
+                "generation_time_s": float(generation_time_s),
+                "evaluation_time_s": float(evaluation_time_s),
+                "invalid_before_eval_count": int(invalid_before_eval_count),
             }
             self._write_run_log(run_record)
 

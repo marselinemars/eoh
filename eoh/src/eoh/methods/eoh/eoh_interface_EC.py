@@ -41,6 +41,11 @@ class InterfaceEC():
         self.controller_parent_mix = None
         self.controller_prompt_modifiers = []
         self.controller_preferred_parent_hashes = set()
+        self._last_batch_stats = {
+            "generation_time_s": 0.0,
+            "evaluation_time_s": 0.0,
+            "invalid_before_eval_count": 0,
+        }
 
     def set_controller_context(self, parent_mix=None, prompt_modifiers=None, preferred_parent_hashes=None):
         if isinstance(parent_mix, dict):
@@ -278,11 +283,35 @@ class InterfaceEC():
             "details": None,
         }
 
+    def _empty_batch_stats(self):
+        return {
+            "generation_time_s": 0.0,
+            "evaluation_time_s": 0.0,
+            "invalid_before_eval_count": 0,
+        }
+
+    def _merge_batch_stats(self, stats_list):
+        merged = self._empty_batch_stats()
+        for stats in stats_list:
+            if not isinstance(stats, dict):
+                continue
+            merged["generation_time_s"] += float(stats.get("generation_time_s", 0.0) or 0.0)
+            merged["evaluation_time_s"] += float(stats.get("evaluation_time_s", 0.0) or 0.0)
+            merged["invalid_before_eval_count"] += int(stats.get("invalid_before_eval_count", 0) or 0)
+        self._last_batch_stats = merged
+
+    def get_last_batch_stats(self):
+        return dict(self._last_batch_stats)
+
     def get_offspring(self, pop, operator):
         last_error = None
+        local_stats = self._empty_batch_stats()
         for attempt in range(1, self.max_offspring_retries + 1):
+            eval_started = False
             try:
+                gen_start = time.time()
                 p, offspring = self._get_alg(pop, operator)
+                local_stats["generation_time_s"] += float(time.time() - gen_start)
 
                 if self.use_numba:
                     pattern = r"def\s+(\w+)\s*\(.*\):"
@@ -297,9 +326,12 @@ class InterfaceEC():
                 n_retry = 1
                 while self.check_duplicate(pop, offspring['code']):
                     n_retry += 1
+                    local_stats["invalid_before_eval_count"] += 1
                     if self.debug:
                         print("duplicated code, retrying ... ")
+                    gen_start = time.time()
                     p, offspring = self._get_alg(pop, operator)
+                    local_stats["generation_time_s"] += float(time.time() - gen_start)
                     if self.use_numba:
                         pattern = r"def\s+(\w+)\s*\(.*\):"
                         match = re.search(pattern, offspring['code'])
@@ -312,10 +344,13 @@ class InterfaceEC():
                     if n_retry > 1:
                         break
 
+                eval_started = True
+                eval_start = time.time()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(self._evaluate_candidate, code)
                     eval_result = future.result(timeout=self.timeout)
                     future.cancel()
+                local_stats["evaluation_time_s"] += float(time.time() - eval_start)
 
                 fitness = eval_result.get("fitness") if isinstance(eval_result, dict) else eval_result
                 if fitness is None:
@@ -324,10 +359,12 @@ class InterfaceEC():
                 offspring['objective'] = np.round(fitness, 5)
                 if isinstance(eval_result, dict):
                     offspring['other_inf'] = eval_result.get("details")
-                return p, offspring
+                return p, offspring, local_stats
 
             except Exception as e:
                 last_error = e
+                if not eval_started:
+                    local_stats["invalid_before_eval_count"] += 1
                 if self.debug:
                     print(f"offspring attempt {attempt}/{self.max_offspring_retries} failed: {e}")
                 continue
@@ -341,13 +378,17 @@ class InterfaceEC():
             'other_inf': None
         }
         p = None
-        return p, offspring
+        return p, offspring, local_stats
 
     def get_offspring_from_prompt(self, pop, prompt_content, parent_cards=None):
         last_error = None
+        local_stats = self._empty_batch_stats()
         for attempt in range(1, self.max_offspring_retries + 1):
+            eval_started = False
             try:
+                gen_start = time.time()
                 p, offspring = self._get_alg_from_prompt(prompt_content, parent_cards=parent_cards)
+                local_stats["generation_time_s"] += float(time.time() - gen_start)
 
                 if self.use_numba:
                     pattern = r"def\s+(\w+)\s*\(.*\):"
@@ -362,9 +403,12 @@ class InterfaceEC():
                 n_retry = 1
                 while self.check_duplicate(pop, offspring['code']):
                     n_retry += 1
+                    local_stats["invalid_before_eval_count"] += 1
                     if self.debug:
                         print("duplicated code, retrying ... ")
+                    gen_start = time.time()
                     p, offspring = self._get_alg_from_prompt(prompt_content, parent_cards=parent_cards)
+                    local_stats["generation_time_s"] += float(time.time() - gen_start)
                     if self.use_numba:
                         pattern = r"def\s+(\w+)\s*\(.*\):"
                         match = re.search(pattern, offspring['code'])
@@ -377,10 +421,13 @@ class InterfaceEC():
                     if n_retry > 1:
                         break
 
+                eval_started = True
+                eval_start = time.time()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(self._evaluate_candidate, code)
                     eval_result = future.result(timeout=self.timeout)
                     future.cancel()
+                local_stats["evaluation_time_s"] += float(time.time() - eval_start)
 
                 fitness = eval_result.get("fitness") if isinstance(eval_result, dict) else eval_result
                 if fitness is None:
@@ -389,10 +436,12 @@ class InterfaceEC():
                 offspring['objective'] = np.round(fitness, 5)
                 if isinstance(eval_result, dict):
                     offspring['other_inf'] = eval_result.get("details")
-                return p, offspring
+                return p, offspring, local_stats
 
             except Exception as e:
                 last_error = e
+                if not eval_started:
+                    local_stats["invalid_before_eval_count"] += 1
                 if self.debug:
                     print(f"custom offspring attempt {attempt}/{self.max_offspring_retries} failed: {e}")
                 continue
@@ -405,7 +454,7 @@ class InterfaceEC():
             'objective': None,
             'other_inf': None
         }
-        return None, offspring
+        return None, offspring, local_stats
     # def process_task(self,pop, operator):
     #     result =  None, {
     #             'algorithm': None,
@@ -461,12 +510,15 @@ class InterfaceEC():
 
         out_p = []
         out_off = []
+        stats_list = []
 
-        for p, off in results:
+        for p, off, stats in results:
             out_p.append(p)
             out_off.append(off)
+            stats_list.append(stats)
             if self.debug:
                 print(f">>> check offsprings: \n {off}")
+        self._merge_batch_stats(stats_list)
         return out_p, out_off
 
     def get_algorithm_from_prompt(self, pop, prompt_content, n_offspring=None, parent_cards=None):
@@ -502,11 +554,14 @@ class InterfaceEC():
 
         out_p = []
         out_off = []
-        for p, off in results:
+        stats_list = []
+        for p, off, stats in results:
             out_p.append(p)
             out_off.append(off)
+            stats_list.append(stats)
             if self.debug:
                 print(f">>> check custom offsprings: \n {off}")
+        self._merge_batch_stats(stats_list)
         return out_p, out_off
     # def get_algorithm(self,pop,operator, pop_size, n_p):
         
