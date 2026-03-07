@@ -24,10 +24,12 @@ class InterfaceEC():
 
         self.select = select
         self.n_p = n_p
+        self.llm_use_local = llm_use_local
         
         self.timeout = timeout
         self.use_numba = use_numba
         self.max_offspring_retries = int(os.getenv("EOH_OFFSPRING_RETRIES", "4"))
+        self.parallel_timeout = max(self.timeout + 15, 120)
 
     def _apply_numba_if_needed(self, code):
         if not self.use_numba:
@@ -247,15 +249,28 @@ class InterfaceEC():
     #     return result
 
     
+    def _get_algorithm_sequential(self, pop, operator):
+        results = []
+        for _ in range(self.pop_size):
+            results.append(self.get_offspring(pop, operator))
+        return results
+
     def get_algorithm(self, pop, operator):
         results = []
-        try:
-            results = Parallel(n_jobs=self.n_p,timeout=self.timeout+15)(delayed(self.get_offspring)(pop, operator) for _ in range(self.pop_size))
-        except Exception as e:
-            if self.debug:
-                print(f"Error: {e}")
-            print("Parallel time out .")
-            
+        use_parallel = self.llm_use_local and self.n_p > 1
+        if use_parallel:
+            try:
+                results = Parallel(n_jobs=self.n_p, timeout=self.parallel_timeout)(
+                    delayed(self.get_offspring)(pop, operator) for _ in range(self.pop_size)
+                )
+            except Exception as e:
+                if self.debug:
+                    print(f"parallel offspring generation failed: {e}")
+                print("Parallel generation failed. Retrying sequentially.")
+                results = self._get_algorithm_sequential(pop, operator)
+        else:
+            results = self._get_algorithm_sequential(pop, operator)
+
         time.sleep(2)
 
 
