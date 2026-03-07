@@ -51,8 +51,19 @@ Problem Context:
 Population Summary:
 {POPULATION_SUMMARY}
 
+Planner Context:
+{PLANNER_CONTEXT}
+
 Candidate Heuristics:
 {HEURISTIC_CARDS}
+
+Planning Requirements:
+1. Explicitly consider the main weakness of the current best heuristic.
+2. Explicitly consider the main strength of the current best heuristic that should be preserved.
+3. Consider at least one alternative direction from another heuristic in the population.
+4. Consider one fallback exploration direction in case the main diagnosis is misleading.
+5. When the current best is clearly better than the rest, preserve its motif but still allocate at least one intervention to an alternative direction.
+6. Recent intervention outcomes matter: do not blindly repeat modes that were recently mostly harmful or mostly no-op.
 
 Return ONLY valid JSON:
 {{
@@ -194,11 +205,12 @@ notes:
 {notes}"""
 
 
-def build_planner_prompt(problem_context: str, summary: PopulationSummary, cards: List[HeuristicCard]) -> str:
+def build_planner_prompt(problem_context: str, summary: PopulationSummary, cards: List[HeuristicCard], planner_context: str = "- none") -> str:
     card_block = "\n\n".join(render_heuristic_card(card) for card in cards)
     return PLANNER_PROMPT_TEMPLATE.format(
         PROBLEM_CONTEXT=problem_context,
         POPULATION_SUMMARY=render_population_summary(summary),
+        PLANNER_CONTEXT=planner_context or "- none",
         HEURISTIC_CARDS=card_block,
     )
 
@@ -247,6 +259,8 @@ def build_rewrite_modifiers(goal: str, instruction: str, card: HeuristicCard) ->
         f"Preserve the core motif of heuristic {card.id}.",
         f"Address this diagnosis: {card.diagnosis.summary}",
         "The revised score must change bin ranking on some feasible-bin cases; trivial rewrites will be rejected.",
+        "Perform a local corrective edit, not a broad rewrite.",
+        "Modify one local weakness at a time and keep the parent recognizably intact.",
     ]
 
 
@@ -258,18 +272,27 @@ def build_tune_modifiers(goal: str, instruction: str, card: HeuristicCard) -> Li
         "Adjust only coefficients or small local score components.",
         "Do not output a coefficient change that preserves the same ranking on typical feasible-bin inputs.",
         "The tuned heuristic must alter some bin choices relative to the parent.",
+        "Prefer the smallest meaningful parameter or weight adjustment that changes behavior.",
     ]
 
 
 def build_variant_modifiers(goal: str, instruction: str, cards: List[HeuristicCard]) -> List[str]:
     parent_ids = ", ".join(card.id for card in cards)
+    primary_summary = cards[0].algorithm_summary if len(cards) > 0 else ""
+    primary_diag = cards[0].diagnosis.summary if len(cards) > 0 else ""
+    secondary_hint = ""
+    if len(cards) > 1:
+        secondary_hint = f"Borrow one distinct behavioral aspect from {cards[1].id} without replacing the main motif."
     return [
         f"Goal: {goal}",
         f"Instruction: {instruction}",
         f"Generate a related but meaningfully different variant inspired by: {parent_ids}.",
-        "Preserve useful motifs when appropriate.",
+        f"Preserve the strongest useful motif from the primary parent: {primary_summary[:140]}",
+        f"Keep this core diagnosis context in mind: {primary_diag}",
         "Do not return a cosmetic rewrite or simple rescaling of a parent score.",
         "The variant must change ranking behavior on some feasible-bin cases.",
+        "Make one controlled structural or behavioral change, not a broad rewrite.",
+        secondary_hint or "Keep the variation controlled and limited to one meaningful aspect.",
     ]
 
 
@@ -280,4 +303,5 @@ def build_explore_modifiers(goal: str, instruction: str, summary: PopulationSumm
         f"Current regime: {summary.current_search_regime}.",
         "Explore a genuinely different heuristic direction while staying relevant to the problem.",
         "Produce a scoring rule with materially different ranking behavior from the current best heuristic.",
+        "Do not drift into random novelty; keep one plausible connection to observed population behavior.",
     ]

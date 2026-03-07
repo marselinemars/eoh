@@ -473,6 +473,124 @@ class EOH:
             "final_planner_card_metric_status": dict(card.behavior_status),
         }
 
+    def _card_metric(self, card, key):
+        if card is None:
+            return None
+        try:
+            value = card.behavior.get(key)
+            return None if value is None else float(value)
+        except Exception:
+            return None
+
+    def _best_strength_weakness(self, card):
+        if card is None:
+            return {"strength": "none", "weakness": "none"}
+        strengths = []
+        weaknesses = []
+        simplicity = self._to_float_or_none(card.simplicity_index)
+        residual = self._card_metric(card, "mean_residual_ratio")
+        order = self._card_metric(card, "order_sensitivity")
+        fragmentation = self._card_metric(card, "fragmentation_index")
+        early = self._card_metric(card, "resource_opening_rate_early")
+        margin = self._card_metric(card, "score_margin_mean")
+        if simplicity is not None and simplicity >= 0.8:
+            strengths.append(f"simple_scoring_structure(simplicity_index={simplicity:.3f})")
+        if residual is not None and residual <= 0.08:
+            strengths.append(f"strong_residual_control(mean_residual_ratio={residual:.4f})")
+        if order is not None and order <= 0.06:
+            strengths.append(f"moderate_order_robustness(order_sensitivity={order:.3f})")
+        if margin is not None and margin > 0.1:
+            strengths.append(f"strong_score_separation(score_margin_mean={margin:.4f})")
+        if fragmentation is not None and fragmentation >= 0.95:
+            weaknesses.append(f"high_fragmentation(fragmentation_index={fragmentation:.4f})")
+        if early is not None and early >= 0.38:
+            weaknesses.append(f"aggressive_early_commitment(resource_opening_rate_early={early:.4f})")
+        if order is not None and order >= 0.1:
+            weaknesses.append(f"high_order_sensitivity(order_sensitivity={order:.3f})")
+        if margin is not None and margin <= 0.05:
+            weaknesses.append(f"low_score_margin(score_margin_mean={margin:.4f})")
+        return {
+            "strength": strengths[0] if strengths else f"best_known_fitness(fitness={card.fitness})",
+            "weakness": weaknesses[0] if weaknesses else "no_single_dominant_weakness",
+        }
+
+    def _alternative_direction_lines(self, cards):
+        if len(cards) <= 1:
+            return ["- no strong alternative direction available"]
+        best = cards[0]
+        alternatives = []
+        for card in cards[1:4]:
+            frag = self._card_metric(card, "fragmentation_index")
+            order = self._card_metric(card, "order_sensitivity")
+            entropy = self._card_metric(card, "choice_entropy")
+            alternatives.append(
+                f"- {card.id}: fitness={card.fitness}, summary={card.algorithm_summary[:90]}, "
+                f"fragmentation={frag}, entropy={entropy}, order_sensitivity={order}"
+            )
+        return alternatives[:2] or ["- no strong alternative direction available"]
+
+    def _recent_mode_summary(self, op_history, window=8):
+        recent = [rec for rec in op_history[-max(1, int(window)):] if rec.get("mode") == "planner_population"]
+        summary = {}
+        for mode in ["rewrite", "tune", "variant", "explore"]:
+            rows = [rec for rec in recent if rec.get("execution_mode") == mode]
+            if not rows:
+                summary[mode] = {
+                    "count": 0,
+                    "improvement_rate": 0.0,
+                    "harmful_rate": 0.0,
+                    "noop_rate": 0.0,
+                    "failed_rate": 0.0,
+                    "text": f"{mode}: no recent data",
+                }
+                continue
+            total = sum(max(1, int(rec.get("n_offspring", 0) or 0)) for rec in rows)
+            improvements = sum(int(rec.get("n_improvement", 0) or 0) for rec in rows)
+            harmful = sum(int(rec.get("n_harmful", 0) or 0) for rec in rows)
+            neutral = sum(int(rec.get("n_neutral", 0) or 0) for rec in rows)
+            failed = sum(int(rec.get("n_generation_failed", 0) or 0) for rec in rows)
+            noop = sum(int(rec.get("n_noop_reject", 0) or 0) for rec in rows)
+            improvement_rate = improvements / total
+            harmful_rate = harmful / total
+            noop_rate = noop / total
+            failed_rate = failed / total
+            dominant = "mixed"
+            if improvement_rate > max(harmful_rate, noop_rate, failed_rate):
+                dominant = "some positive signal"
+            elif harmful_rate >= max(noop_rate, failed_rate):
+                dominant = "mostly harmful"
+            elif noop_rate >= max(harmful_rate, failed_rate):
+                dominant = "mostly no-op"
+            elif failed_rate > 0:
+                dominant = "mostly failed"
+            summary[mode] = {
+                "count": len(rows),
+                "improvement_rate": improvement_rate,
+                "harmful_rate": harmful_rate,
+                "noop_rate": noop_rate,
+                "failed_rate": failed_rate,
+                "text": f"{mode}: {dominant}, improvement_rate={improvement_rate:.2f}, harmful_rate={harmful_rate:.2f}, noop_rate={noop_rate:.2f}, failed_rate={failed_rate:.2f}",
+            }
+        return summary
+
+    def _planner_context_text(self, summary, cards, recent_mode_summary):
+        best = cards[0] if cards else None
+        best_diag = self._best_strength_weakness(best)
+        lines = [
+            "Best Heuristic Analysis:",
+            f"- preserve_strength: {best_diag['strength']}",
+            f"- target_weakness: {best_diag['weakness']}",
+            "Alternative Directions:",
+        ]
+        lines.extend(self._alternative_direction_lines(cards))
+        lines.append("Recent Intervention Outcomes:")
+        for mode in ["rewrite", "tune", "variant", "explore"]:
+            lines.append(f"- {recent_mode_summary.get(mode, {}).get('text', mode + ': no recent data')}")
+        lines.append("Planning Principle:")
+        lines.append("- preserve the best motif conservatively, but allocate at least one intervention to a behaviorally distinct alternative direction")
+        lines.append("- keep one fallback exploration direction in case the main diagnosis is misleading")
+        return "\n".join(lines)
+
     def _build_op_stats_k(self, op_history, window):
         stats = {op: {"calls": 0, "success_rate": 0.0, "mean_delta": 0.0, "invalid_rate": 0.0} for op in ["e1", "e2", "m1", "m2", "m3"]}
         window_records = op_history[-max(1, int(window)):]
@@ -874,6 +992,8 @@ class EOH:
                 planner_cards = select_planner_cards(cards, max_cards=self.planner_population_view_size)
                 planner_card_map = {card.id: card for card in planner_cards}
                 card_map = {card.id: card for card in cards}
+                recent_mode_summary = self._recent_mode_summary(op_history, window=8)
+                planner_context_text = self._planner_context_text(summary, planner_cards, recent_mode_summary)
                 diagnosis_label = summary.current_search_regime.upper()
                 self._write_heuristic_cards_log(
                     {
@@ -910,6 +1030,7 @@ class EOH:
                     problem_context=self._problem_context_for_planner(),
                     summary=summary,
                     cards=planner_cards,
+                    planner_context=planner_context_text,
                 )
                 planner_time_s += float(time.time() - planner_start)
                 planner_output_obj = planner_result["planner_output"]
@@ -920,6 +1041,8 @@ class EOH:
                         "mode": self.mode,
                         "shown_cards": [card.to_dict() for card in planner_cards],
                         "population_summary": summary.to_dict(),
+                        "planner_context": planner_context_text,
+                        "recent_mode_summary": recent_mode_summary,
                         "planner_output": planner_output_obj.to_dict(),
                         "llm_meta": planner_llm_meta,
                     }
@@ -929,6 +1052,7 @@ class EOH:
                     cards=planner_cards,
                     summary=summary,
                     generation_budget=self.pop_size,
+                    recent_mode_summary=recent_mode_summary,
                 )
                 chosen_operator = "planner:" + ",".join(
                     f"{item.get('execution_mode')}x{int(item.get('offspring_count', 0))}"
@@ -996,6 +1120,9 @@ class EOH:
                     generation_failed_op_count = 0
                     duplicate_reject_op_count = 0
                     noop_reject_op_count = 0
+                    improvement_offspring_count = 0
+                    harmful_offspring_count = 0
+                    neutral_offspring_count = 0
                     for off_idx, offspring in enumerate(offsprings):
                         primary_parent = target_cards[0] if len(target_cards) > 0 else None
                         parent_hashes = []
@@ -1052,9 +1179,11 @@ class EOH:
                             "fitness_delta": None if primary_parent is None else (
                                 None if offspring.get("objective") is None or primary_parent.fitness is None else float(primary_parent.fitness - float(offspring.get("objective")))
                             ),
+                            "parent_fitness": None if primary_parent is None else self._to_float_or_none(primary_parent.fitness),
                             "mean_residual_ratio_delta": self._behavior_delta(offspring, primary_parent, "mean_residual_ratio"),
                             "fragmentation_delta": self._behavior_delta(offspring, primary_parent, "fragmentation_index"),
                             "resource_opening_rate_early_delta": self._behavior_delta(offspring, primary_parent, "resource_opening_rate_early"),
+                            "score_margin_mean_delta": self._behavior_delta(offspring, primary_parent, "score_margin_mean"),
                             "order_sensitivity_delta": self._behavior_delta(offspring, primary_parent, "order_sensitivity"),
                         }
                         offspring_code_hash = self._code_hash(offspring.get("code"))
@@ -1087,6 +1216,17 @@ class EOH:
                             continue
                         if offspring_code_hash is not None:
                             accepted_code_hashes.add(offspring_code_hash)
+                        fitness_delta = lineage_record["fitness_delta"]
+                        if fitness_delta is not None and fitness_delta > 1e-12:
+                            usefulness_label = "improvement"
+                            improvement_offspring_count += 1
+                        elif fitness_delta is not None and fitness_delta < -1e-12:
+                            usefulness_label = "harmful"
+                            harmful_offspring_count += 1
+                        else:
+                            usefulness_label = "neutral"
+                            neutral_offspring_count += 1
+                        lineage_record["usefulness_label"] = usefulness_label
                         self._write_offspring_lineage_log(lineage_record)
                         valid_offsprings.append(offspring)
                         accepted_offspring_count += 1
@@ -1126,6 +1266,9 @@ class EOH:
                         "n_duplicate_reject": int(duplicate_reject_op_count),
                         "n_noop_reject": int(noop_reject_op_count),
                         "n_rejected_total": int(n_generation_failed + n_rejected),
+                        "n_improvement": int(improvement_offspring_count),
+                        "n_harmful": int(harmful_offspring_count),
+                        "n_neutral": int(neutral_offspring_count),
                         "invalid_rate": float(invalid_rate_op),
                         "best_before": self._to_float_or_none(best_before),
                         "best_after": self._to_float_or_none(best_after),

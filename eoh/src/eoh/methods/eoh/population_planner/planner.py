@@ -17,6 +17,16 @@ def _try_parse_json_object(text):
             return obj
     except Exception:
         pass
+    if isinstance(text, str):
+        start = text.find("{")
+        end = text.rfind("}")
+        if 0 <= start < end:
+            try:
+                obj = json.loads(text[start : end + 1])
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
     return None
 
 
@@ -61,9 +71,9 @@ class PopulationPlanner:
             "rationale": ["Fallback keeps the best visible motif while still creating some variation."],
         }
 
-    def plan(self, problem_context: str, summary, cards) -> Dict[str, Any]:
+    def plan(self, problem_context: str, summary, cards, planner_context: str = "- none") -> Dict[str, Any]:
         available_ids = [card.id for card in cards]
-        prompt = build_planner_prompt(problem_context, summary, cards)
+        prompt = build_planner_prompt(problem_context, summary, cards, planner_context=planner_context)
         attempts = []
         current_prompt = prompt
         raw_output = None

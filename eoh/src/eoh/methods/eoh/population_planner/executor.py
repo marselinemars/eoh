@@ -109,13 +109,30 @@ class PopulationPlannerExecutor:
         cards: List[HeuristicCard],
         summary: PopulationSummary,
         generation_budget: int,
+        recent_mode_summary: Dict[str, Dict] | None = None,
     ) -> List[Dict]:
         card_map = {card.id: card for card in cards}
         queue = []
         remaining = max(0, int(generation_budget))
+        recent_mode_summary = recent_mode_summary or {}
+        def mode_weight(mode: str) -> float:
+            info = recent_mode_summary.get(mode, {})
+            try:
+                improvement = float(info.get("improvement_rate", 0.0) or 0.0)
+                harmful = float(info.get("harmful_rate", 0.0) or 0.0)
+                noop = float(info.get("noop_rate", 0.0) or 0.0)
+                failed = float(info.get("failed_rate", 0.0) or 0.0)
+            except Exception:
+                return 1.0
+            score = 1.0 + 0.9 * improvement - 0.45 * harmful - 0.35 * noop - 0.40 * failed
+            return float(max(0.6, min(1.35, score)))
         ordered = sorted(
             planner_output.interventions,
-            key=lambda item: (PRIORITY_ORDER.get(item.priority, 99), 0 if item.execution_mode != "evaluate" else 1),
+            key=lambda item: (
+                PRIORITY_ORDER.get(item.priority, 99),
+                0 if item.execution_mode != "evaluate" else 1,
+                -mode_weight(item.execution_mode),
+            ),
         )
         for intervention in ordered:
             if remaining <= 0 and intervention.execution_mode != "evaluate":
@@ -126,7 +143,9 @@ class PopulationPlannerExecutor:
             if intervention.execution_mode == "evaluate":
                 queue.append(self.execute_evaluate(intervention, targets, summary))
                 continue
-            count = min(remaining, max(1, int(intervention.offspring_count)))
+            requested = max(1, int(intervention.offspring_count))
+            adjusted = max(1, int(round(requested * mode_weight(intervention.execution_mode))))
+            count = min(remaining, adjusted)
             queue.append(self._dispatch(intervention, targets, summary, count))
             remaining -= count
 
