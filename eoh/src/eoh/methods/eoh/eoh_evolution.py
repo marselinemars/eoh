@@ -232,6 +232,15 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         for node in ast.walk(tree):
             if isinstance(node, banned_nodes):
                 raise RuntimeError("score() must use vectorized numpy operations; Python loops/comprehensions are not allowed.")
+            if isinstance(node, ast.Call):
+                func = node.func
+                attr_name = None
+                if isinstance(func, ast.Attribute):
+                    attr_name = func.attr
+                elif isinstance(func, ast.Name):
+                    attr_name = func.id
+                if attr_name in {"sort", "argsort", "lexsort", "apply_along_axis", "vectorize", "frompyfunc"}:
+                    raise RuntimeError(f"score() uses {attr_name}(), which is too expensive for repeated online evaluation.")
         self._validate_runtime_contract(code)
         return code
 
@@ -271,6 +280,16 @@ Finally, provide the revised code, keeping the function name, inputs, and output
                 saw_nontrivial_variation = True
             if len(np.unique(np.round(scores, 12))) > 1:
                 saw_length_variation = True
+        large_bins = np.linspace(9.0, 5008.0, num=5000, dtype=float)
+        t0 = time.perf_counter()
+        for _ in range(32):
+            raw = getattr(module, self.prompt_func_name)(9, large_bins.copy())
+            scores = np.asarray(raw, dtype=float).reshape(-1)
+            if len(scores) != len(large_bins) or not np.all(np.isfinite(scores)):
+                raise RuntimeError("score() failed repeated large-array probe.")
+        repeated_elapsed = time.perf_counter() - t0
+        if repeated_elapsed > 0.15:
+            raise RuntimeError("score() is too slow for repeated online use; repeated large-array probe exceeded runtime budget.")
         if not saw_nontrivial_variation:
             raise RuntimeError("score() output is constant on probe cases; heuristic is too weak/degenerate.")
         if not saw_length_variation:

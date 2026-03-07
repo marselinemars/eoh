@@ -129,6 +129,7 @@ Rewrite Guidance:
 9. Do NOT merely rescale the existing score, multiply it by a binary mask, or wrap it in a trivial threshold penalty without changing the ranking logic in a meaningful way.
 10. Make one focused corrective change that is specific and testable.
 11. Use vectorized NumPy operations only. Do NOT use Python loops or comprehensions over bins.
+12. Do NOT use sorting, argsort, lexsort, or expensive ranking operations inside score(); the function must stay cheap for repeated online evaluation.
 
 What to optimize for:
 - maintain the strengths of the current heuristic
