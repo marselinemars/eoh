@@ -73,6 +73,64 @@ Return ONLY valid JSON:
 """
 
 
+REWRITE_PROMPT_TEMPLATE = """You are revising an existing heuristic for an optimization problem.
+
+Your task is NOT to invent a completely new heuristic.
+Your task is to produce a targeted correction of the existing heuristic.
+
+You must preserve the useful core motif of the current heuristic, while revising the specific weakness described below.
+
+Problem Context:
+{PROBLEM_CONTEXT}
+
+Current Heuristic ID:
+{HEURISTIC_ID}
+
+Current Heuristic Summary:
+{HEURISTIC_SUMMARY}
+
+Current Heuristic Diagnosis:
+{HEURISTIC_DIAGNOSIS_SUMMARY}
+
+Key Evidence About Its Behavior:
+{HEURISTIC_KEY_EVIDENCE}
+
+Behavior Summary:
+{HEURISTIC_BEHAVIOR_SUMMARY}
+
+Planner Goal:
+{GOAL}
+
+Planner Instruction:
+{INSTRUCTION}
+
+Rewrite Guidance:
+1. Preserve the main useful idea or motif of the current heuristic.
+2. Focus on correcting the diagnosed weakness described above.
+3. Do NOT introduce unnecessary unrelated logic changes.
+4. Prefer a targeted revision over a completely different structure.
+5. Keep the function signature, inputs, and outputs unchanged.
+6. Keep the heuristic reasonably simple unless the instruction explicitly requires otherwise.
+7. If the diagnosed weakness can be improved by softening, rebalancing, simplifying, or stabilizing part of the scoring logic, prefer that over replacing the whole heuristic.
+
+What to optimize for:
+- maintain the strengths of the current heuristic
+- reduce the diagnosed weakness
+- improve robustness or decision quality where relevant
+- avoid destroying the successful behavior already present
+
+STRICT OUTPUT FORMAT (MANDATORY):
+1. First line: one sentence wrapped in braces like {{your sentence}}.
+2. Then output ONLY Python code (no markdown fences).
+3. Code must include: import numpy as np
+4. Code must define exactly one function named {FUNC_NAME}.
+5. Function inputs must be exactly: ({FUNC_INPUTS}).
+6. Function must return: {FUNC_OUTPUTS}.
+7. Do NOT output analysis, bullet points, explanations, or prose outside the brace sentence.
+8. Do NOT output anything before the brace line or after the Python code.
+"""
+
+
 def render_heuristic_card(card: HeuristicCard) -> str:
     b = card.behavior
     d = card.diagnosis
@@ -131,12 +189,48 @@ def build_planner_prompt(problem_context: str, summary: PopulationSummary, cards
     )
 
 
+def _behavior_summary_lines(card: HeuristicCard) -> List[str]:
+    b = card.behavior
+    return [
+        f"mean_residual_ratio={b.get('mean_residual_ratio')}",
+        f"fragmentation_index={b.get('fragmentation_index')}",
+        f"resource_opening_rate_early={b.get('resource_opening_rate_early')}",
+        f"resource_opening_rate_mid={b.get('resource_opening_rate_mid')}",
+        f"resource_opening_rate_late={b.get('resource_opening_rate_late')}",
+        f"choice_entropy={b.get('choice_entropy')}",
+        f"extreme_option_preference={b.get('extreme_option_preference')}",
+        f"score_margin_mean={b.get('score_margin_mean')}",
+        f"score_margin_variance={b.get('score_margin_variance')}",
+        f"order_sensitivity={b.get('order_sensitivity')}",
+        f"family_variance={b.get('family_variance')}",
+        f"holdout_gap={b.get('holdout_gap')}",
+    ]
+
+
+def build_rewrite_prompt(problem_context: str, goal: str, instruction: str, card: HeuristicCard, func_name: str, func_inputs: List[str], func_outputs: List[str]) -> str:
+    evidence = "\n".join(f"- {line}" for line in card.diagnosis.key_evidence[:3]) or "- no evidence"
+    behavior_summary = "\n".join(f"- {line}" for line in _behavior_summary_lines(card))
+    return REWRITE_PROMPT_TEMPLATE.format(
+        PROBLEM_CONTEXT=problem_context,
+        HEURISTIC_ID=card.id,
+        HEURISTIC_SUMMARY=card.algorithm_summary,
+        HEURISTIC_DIAGNOSIS_SUMMARY=card.diagnosis.summary,
+        HEURISTIC_KEY_EVIDENCE=evidence,
+        HEURISTIC_BEHAVIOR_SUMMARY=behavior_summary,
+        GOAL=goal,
+        INSTRUCTION=instruction,
+        FUNC_NAME=func_name,
+        FUNC_INPUTS=", ".join(func_inputs),
+        FUNC_OUTPUTS=", ".join(func_outputs),
+    ) + "\n\nCurrent heuristic code:\n" + (card.code or "")
+
+
 def build_rewrite_modifiers(goal: str, instruction: str, card: HeuristicCard) -> List[str]:
     return [
         f"Goal: {goal}",
         f"Instruction: {instruction}",
         f"Preserve the core motif of heuristic {card.id}.",
-        "Keep the function signature unchanged and remain reasonably simple.",
+        f"Address this diagnosis: {card.diagnosis.summary}",
     ]
 
 

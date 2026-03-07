@@ -334,6 +334,10 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             input()
 
         return [code_all, algorithm]
+
+    def generate_from_prompt(self, prompt_content):
+        prompt_content = self._append_additional_constraints(prompt_content)
+        return self._get_alg(prompt_content)
     
     def e1(self,parents):
       

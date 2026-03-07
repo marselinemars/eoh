@@ -248,6 +248,18 @@ class InterfaceEC():
 
         return parents, offspring
 
+    def _get_alg_from_prompt(self, prompt_content, parent_cards=None):
+        self.evol.set_prompt_modifiers(self.controller_prompt_modifiers)
+        offspring = {
+            'algorithm': None,
+            'code': None,
+            'objective': None,
+            'other_inf': None
+        }
+        [offspring['code'], offspring['algorithm']] = self.evol.generate_from_prompt(prompt_content)
+        parents = list(parent_cards) if isinstance(parent_cards, list) else None
+        return parents, offspring
+
     def _evaluate_candidate(self, code):
         if hasattr(self.interface_eval, "evaluate_with_details"):
             details = self.interface_eval.evaluate_with_details(code, split="train")
@@ -326,6 +338,70 @@ class InterfaceEC():
         }
         p = None
         return p, offspring
+
+    def get_offspring_from_prompt(self, pop, prompt_content, parent_cards=None):
+        last_error = None
+        for attempt in range(1, self.max_offspring_retries + 1):
+            try:
+                p, offspring = self._get_alg_from_prompt(prompt_content, parent_cards=parent_cards)
+
+                if self.use_numba:
+                    pattern = r"def\s+(\w+)\s*\(.*\):"
+                    match = re.search(pattern, offspring['code'])
+                    if match is None:
+                        raise RuntimeError("No function definition found in generated code.")
+                    function_name = match.group(1)
+                    code = add_numba_decorator(program=offspring['code'], function_name=function_name)
+                else:
+                    code = offspring['code']
+
+                n_retry = 1
+                while self.check_duplicate(pop, offspring['code']):
+                    n_retry += 1
+                    if self.debug:
+                        print("duplicated code, retrying ... ")
+                    p, offspring = self._get_alg_from_prompt(prompt_content, parent_cards=parent_cards)
+                    if self.use_numba:
+                        pattern = r"def\s+(\w+)\s*\(.*\):"
+                        match = re.search(pattern, offspring['code'])
+                        if match is None:
+                            raise RuntimeError("No function definition found in generated code.")
+                        function_name = match.group(1)
+                        code = add_numba_decorator(program=offspring['code'], function_name=function_name)
+                    else:
+                        code = offspring['code']
+                    if n_retry > 1:
+                        break
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(self._evaluate_candidate, code)
+                    eval_result = future.result(timeout=self.timeout)
+                    future.cancel()
+
+                fitness = eval_result.get("fitness") if isinstance(eval_result, dict) else eval_result
+                if fitness is None:
+                    raise RuntimeError("Evaluation returned None.")
+
+                offspring['objective'] = np.round(fitness, 5)
+                if isinstance(eval_result, dict):
+                    offspring['other_inf'] = eval_result.get("details")
+                return p, offspring
+
+            except Exception as e:
+                last_error = e
+                if self.debug:
+                    print(f"custom offspring attempt {attempt}/{self.max_offspring_retries} failed: {e}")
+                continue
+
+        if self.debug:
+            print(f"all custom offspring attempts failed: {last_error}")
+        offspring = {
+            'algorithm': None,
+            'code': None,
+            'objective': None,
+            'other_inf': None
+        }
+        return None, offspring
     # def process_task(self,pop, operator):
     #     result =  None, {
     #             'algorithm': None,
@@ -387,6 +463,46 @@ class InterfaceEC():
             out_off.append(off)
             if self.debug:
                 print(f">>> check offsprings: \n {off}")
+        return out_p, out_off
+
+    def get_algorithm_from_prompt(self, pop, prompt_content, n_offspring=None, parent_cards=None):
+        if n_offspring is None:
+            n_targets = int(self.pop_size)
+        else:
+            try:
+                n_targets = int(n_offspring)
+            except (TypeError, ValueError):
+                n_targets = int(self.pop_size)
+        n_targets = max(0, n_targets)
+        if n_targets == 0:
+            return [], []
+
+        parallel_jobs = min(self.n_p, self.max_parallel_llm_requests)
+        parallel_jobs = max(1, parallel_jobs)
+        results = []
+        try:
+            results = Parallel(
+                n_jobs=parallel_jobs,
+                timeout=self.timeout + 15,
+                backend=self.parallel_backend,
+                batch_size=1,
+            )(delayed(self.get_offspring_from_prompt)(pop, prompt_content, parent_cards=parent_cards) for _ in range(n_targets))
+        except Exception as e:
+            print(f"Parallel offspring generation failed for custom prompt: {type(e).__name__}: {e}")
+            print("Falling back to sequential offspring generation.")
+            results = []
+            for _ in range(n_targets):
+                results.append(self.get_offspring_from_prompt(pop, prompt_content, parent_cards=parent_cards))
+
+        time.sleep(2)
+
+        out_p = []
+        out_off = []
+        for p, off in results:
+            out_p.append(p)
+            out_off.append(off)
+            if self.debug:
+                print(f">>> check custom offsprings: \n {off}")
         return out_p, out_off
     # def get_algorithm(self,pop,operator, pop_size, n_p):
         

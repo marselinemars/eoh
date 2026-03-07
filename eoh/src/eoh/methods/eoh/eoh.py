@@ -134,7 +134,12 @@ class EOH:
                 debug_mode=self.debug_mode,
                 max_retries=self.planner_population_json_retries,
             )
-            self.population_executor = PopulationPlannerExecutor()
+            self.population_executor = PopulationPlannerExecutor(
+                problem_context=self._problem_context_for_planner(),
+                func_name=self.prob.prompts.get_func_name(),
+                func_inputs=self.prob.prompts.get_func_inputs(),
+                func_outputs=self.prob.prompts.get_func_outputs(),
+            )
 
         # Set a random seed
         random.seed(2024)
@@ -870,7 +875,9 @@ class EOH:
                     execution_mode = str(item.get("execution_mode", ""))
                     targets = [str(x) for x in item.get("targets", [])]
                     operator = item.get("operator")
+                    generation_backend = str(item.get("generation_backend", ""))
                     prompt_modifiers = item.get("prompt_modifiers", [])
+                    custom_prompt = item.get("custom_prompt")
                     offspring_count = int(item.get("offspring_count", 0) or 0)
                     self._write_executed_interventions_log(
                         {
@@ -893,9 +900,17 @@ class EOH:
                         preferred_parent_hashes=preferred_hashes,
                     )
                     best_before = self._best_objective(population)
-                    parent_payloads, offsprings = interface_ec.get_algorithm(population, operator, n_offspring=offspring_count)
+                    target_cards = [planner_card_map[target] for target in targets if target in planner_card_map]
+                    if isinstance(custom_prompt, str) and custom_prompt.strip():
+                        parent_payloads, offsprings = interface_ec.get_algorithm_from_prompt(
+                            population,
+                            custom_prompt,
+                            n_offspring=offspring_count,
+                            parent_cards=[{"code": card.code} for card in target_cards if isinstance(card.code, str)],
+                        )
+                    else:
+                        parent_payloads, offsprings = interface_ec.get_algorithm(population, operator, n_offspring=offspring_count)
                     for off_idx, offspring in enumerate(offsprings):
-                        target_cards = [planner_card_map[target] for target in targets if target in planner_card_map]
                         primary_parent = target_cards[0] if len(target_cards) > 0 else None
                         parent_hashes = []
                         parent_ids = list(targets)
@@ -920,6 +935,7 @@ class EOH:
                             "offspring_id": offspring["other_inf"].get("heuristic_id"),
                             "execution_mode": execution_mode,
                             "operator": operator,
+                            "generation_backend": generation_backend,
                             "target_ids": parent_ids,
                             "fitness": self._to_float_or_none(offspring.get("objective")),
                             "fitness_delta": None if primary_parent is None else (
@@ -950,6 +966,7 @@ class EOH:
                         "mode": self.mode,
                         "operator": operator,
                         "execution_mode": execution_mode,
+                        "generation_backend": generation_backend,
                         "executed": True,
                         "diagnosis_label": diagnosis_label,
                         "n_offspring": int(n_offspring),
