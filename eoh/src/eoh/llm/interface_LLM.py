@@ -31,6 +31,11 @@ class InterfaceLLM:
                 print(">> Stop with empty url for local llm !")
                 exit()
             self.interface_llm = InterfaceLocalLLM(self.llm_local_url)
+            print(
+                f"local llm config: timeout_s={self.interface_llm._timeout_s}, "
+                f"max_retries={self.interface_llm._max_retries}, "
+                f"max_new_tokens={self.interface_llm._max_new_tokens}"
+            )
         else:
             print("remote llm api is used ...")
             if (

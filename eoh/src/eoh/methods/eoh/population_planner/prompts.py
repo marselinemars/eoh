@@ -209,24 +209,19 @@ def _behavior_summary_lines(card: HeuristicCard) -> List[str]:
             return str(value)
         return status
     return [
-        f"mean_residual_ratio={fmt_metric('mean_residual_ratio')}",
         f"fragmentation_index={fmt_metric('fragmentation_index')}",
         f"resource_opening_rate_early={fmt_metric('resource_opening_rate_early')}",
-        f"resource_opening_rate_mid={fmt_metric('resource_opening_rate_mid')}",
-        f"resource_opening_rate_late={fmt_metric('resource_opening_rate_late')}",
         f"choice_entropy={fmt_metric('choice_entropy')}",
         f"extreme_option_preference={fmt_metric('extreme_option_preference')}",
         f"score_margin_mean={fmt_metric('score_margin_mean')}",
-        f"score_margin_variance={fmt_metric('score_margin_variance')}",
-        f"order_sensitivity={fmt_metric('order_sensitivity')}",
-        f"family_variance={fmt_metric('family_variance')}",
-        f"holdout_gap={fmt_metric('holdout_gap')}",
     ]
 
 
 def build_rewrite_prompt(problem_context: str, goal: str, instruction: str, card: HeuristicCard, func_name: str, func_inputs: List[str], func_outputs: List[str]) -> str:
     evidence = "\n".join(f"- {line}" for line in card.diagnosis.key_evidence[:3]) or "- no evidence"
     behavior_summary = "\n".join(f"- {line}" for line in _behavior_summary_lines(card))
+    code_lines = (card.code or "").splitlines()
+    compact_code = "\n".join(code_lines[:12])
     return REWRITE_PROMPT_TEMPLATE.format(
         PROBLEM_CONTEXT=problem_context,
         HEURISTIC_ID=card.id,
@@ -239,7 +234,7 @@ def build_rewrite_prompt(problem_context: str, goal: str, instruction: str, card
         FUNC_NAME=func_name,
         FUNC_INPUTS=", ".join(func_inputs),
         FUNC_OUTPUTS=", ".join(func_outputs),
-    ) + "\n\nCurrent heuristic code:\n" + (card.code or "")
+    ) + "\n\nCurrent heuristic code:\n" + compact_code
 
 
 def build_rewrite_modifiers(goal: str, instruction: str, card: HeuristicCard) -> List[str]:

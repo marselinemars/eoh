@@ -11,13 +11,13 @@ class InterfaceLocalLLM:
 
     def __init__(self, url):
         self._url = url  # 'http://127.0.0.1:11045/completions'
-        self._timeout_s = int(os.getenv("EOH_LOCAL_LLM_TIMEOUT_S", "180"))
+        self._timeout_s = int(os.getenv("EOH_LOCAL_LLM_TIMEOUT_S", "300"))
         self._retry_sleep_s = float(os.getenv("EOH_LOCAL_LLM_RETRY_SLEEP_S", "1.0"))
-        self._max_retries = max(1, int(os.getenv("EOH_LOCAL_LLM_MAX_RETRIES", "3")))
+        self._max_retries = max(1, int(os.getenv("EOH_LOCAL_LLM_MAX_RETRIES", "1")))
         self._do_sample = os.getenv("EOH_LOCAL_LLM_DO_SAMPLE", "0") == "1"
         self._temperature = float(os.getenv("EOH_LOCAL_LLM_TEMPERATURE", "0.2"))
         self._top_p = float(os.getenv("EOH_LOCAL_LLM_TOP_P", "0.95"))
-        self._max_new_tokens = int(os.getenv("EOH_LOCAL_LLM_MAX_NEW_TOKENS", "1200"))
+        self._max_new_tokens = int(os.getenv("EOH_LOCAL_LLM_MAX_NEW_TOKENS", "512"))
         self._log_http_responses = os.getenv("EOH_LOCAL_LLM_LOG_RESPONSES", "0") == "1"
 
     def get_response(self, content: str, request_mode="code", tool_name=None, json_schema=None, stop=None) -> str:
@@ -34,6 +34,10 @@ class InterfaceLocalLLM:
                     stop=stop,
                 )
                 return response
+            except requests.exceptions.Timeout as exc:
+                last_exc = TimeoutError(f"llm_request_timeout after {self._timeout_s}s")
+                print(f"Local LLM request timed out (try={n_try}): {last_exc}")
+                time.sleep(self._retry_sleep_s)
             except Exception as exc:
                 last_exc = exc
                 print(f"Local LLM request failed (try={n_try}): {exc}")

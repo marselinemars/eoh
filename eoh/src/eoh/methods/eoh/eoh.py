@@ -972,9 +972,7 @@ class EOH:
                     )
                     best_before = self._best_objective(population)
                     target_cards = [planner_card_map[target] for target in targets if target in planner_card_map]
-                    llm_parallel_limit = 2
-                    if generation_backend in ["dedicated_rewrite", "semantic_explore"]:
-                        llm_parallel_limit = 1
+                    llm_parallel_limit = 1
                     if isinstance(custom_prompt, str) and custom_prompt.strip():
                         parent_payloads, offsprings = interface_ec.get_algorithm_from_prompt(
                             population,
