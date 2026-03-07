@@ -6,8 +6,8 @@ In each step, the item will be assigned to the bin with the maximum score. If th
         self.prompt_func_inputs = ['item', 'bins']
         self.prompt_func_outputs = ['scores']
         self.prompt_inout_inf = "'item' and 'bins' are the size of current item and the rest capacities of feasible bins, which are larger than the item size. \
-The output named 'scores' is the scores for the bins for assignment. "
-        self.prompt_other_inf = "Note that 'item' is of type int, while 'bins' and 'scores' are both Numpy arrays. The novel function should be sufficiently complex in order to achieve better performance. It is important to ensure self-consistency."
+The output named 'scores' is the scores for the bins for assignment, and it must be a numeric NumPy array with exactly the same shape and length as 'bins'. "
+        self.prompt_other_inf = "Note that 'item' is of type int, while 'bins' and 'scores' are both Numpy arrays. The novel function should be sufficiently complex in order to achieve better performance. It is important to ensure self-consistency. Do not return a scalar. Do not slice bins into a different-length array unless you restore the original shape before returning. Any operation on bins must preserve a final score vector with one score per feasible bin."
 #Include the following imports at the beginning of the code: 'import numpy as np', and 'from numba import jit'. Place '@jit(nopython=True)' just above the 'priority' function definition."
 
     def get_task(self):

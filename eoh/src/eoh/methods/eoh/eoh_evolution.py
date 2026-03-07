@@ -235,11 +235,17 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             raise RuntimeError("Generated code does not expose the required score function.")
         probe_cases = [
             (3, np.asarray([3.0, 5.0, 7.0], dtype=float)),
-            (6, np.asarray([6.0, 8.0, 10.0], dtype=float)),
+            (6, np.asarray([6.0, 8.0, 10.0, 12.0, 15.0], dtype=float)),
+            (4, np.linspace(4.0, 32.0, num=17, dtype=float)),
+            (9, np.linspace(9.0, 5008.0, num=5000, dtype=float)),
         ]
         saw_nontrivial_variation = False
+        saw_length_variation = False
         for item, bins in probe_cases:
-            raw = getattr(module, self.prompt_func_name)(item, bins.copy())
+            try:
+                raw = getattr(module, self.prompt_func_name)(item, bins.copy())
+            except Exception as exc:
+                raise RuntimeError(f"score() execution failed on probe len={len(bins)}: {exc}") from exc
             try:
                 scores = np.asarray(raw, dtype=float).reshape(-1)
             except Exception as exc:
@@ -250,8 +256,12 @@ Finally, provide the revised code, keeping the function name, inputs, and output
                 raise RuntimeError("score() output contains NaN or infinity.")
             if np.max(scores) > np.min(scores):
                 saw_nontrivial_variation = True
+            if len(np.unique(np.round(scores, 12))) > 1:
+                saw_length_variation = True
         if not saw_nontrivial_variation:
             raise RuntimeError("score() output is constant on probe cases; heuristic is too weak/degenerate.")
+        if not saw_length_variation:
+            raise RuntimeError("score() does not meaningfully vary across feasible bins on probe cases.")
 
     def _fallback_code(self):
         if self.prompt_func_name == "score" and self.prompt_func_inputs == ["item", "bins"]:
