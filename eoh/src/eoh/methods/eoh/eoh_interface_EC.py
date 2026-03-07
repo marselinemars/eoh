@@ -357,7 +357,11 @@ class InterfaceEC():
                 eval_start = time.time()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(self._evaluate_candidate, code)
-                    eval_result = future.result(timeout=self.timeout)
+                    try:
+                        eval_result = future.result(timeout=self.timeout)
+                    except concurrent.futures.TimeoutError as exc:
+                        future.cancel()
+                        raise RuntimeError(f"evaluation_timeout after {self.timeout}s") from exc
                     future.cancel()
                 local_stats["evaluation_time_s"] += float(time.time() - eval_start)
 
@@ -438,7 +442,11 @@ class InterfaceEC():
                 eval_start = time.time()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(self._evaluate_candidate, code)
-                    eval_result = future.result(timeout=self.timeout)
+                    try:
+                        eval_result = future.result(timeout=self.timeout)
+                    except concurrent.futures.TimeoutError as exc:
+                        future.cancel()
+                        raise RuntimeError(f"evaluation_timeout after {self.timeout}s") from exc
                     future.cancel()
                 local_stats["evaluation_time_s"] += float(time.time() - eval_start)
 

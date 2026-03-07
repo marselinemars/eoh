@@ -115,6 +115,7 @@ Rewrite Guidance:
 8. Your revision will be rejected if it produces effectively the same ranking behavior as the current heuristic on typical inputs.
 9. Do NOT merely rescale the existing score, multiply it by a binary mask, or wrap it in a trivial threshold penalty without changing the ranking logic in a meaningful way.
 10. Make one focused corrective change that is specific and testable.
+11. Use vectorized NumPy operations only. Do NOT use Python loops or comprehensions over bins.
 
 What to optimize for:
 - maintain the strengths of the current heuristic

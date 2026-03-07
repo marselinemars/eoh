@@ -1065,6 +1065,8 @@ class EOH:
                             lineage_record["order_sensitivity_delta"],
                         ]
                         rejection_reason = None
+                        if str(offspring.get("algorithm", "")).strip() == "Fallback valid heuristic":
+                            rejection_reason = "llm_parse_fallback_code"
                         if offspring_code_hash is not None and offspring_code_hash in accepted_code_hashes:
                             rejection_reason = "duplicate_code_in_population_or_batch"
                         elif self._is_noop_relative_to_parent(offspring, primary_parent, metric_deltas):
@@ -1076,6 +1078,9 @@ class EOH:
                             elif rejection_reason == "no_op_relative_to_parent":
                                 noop_reject_op_count += 1
                                 noop_reject_count += 1
+                            elif rejection_reason == "llm_parse_fallback_code":
+                                generation_failed_op_count += 1
+                                generation_failed_count += 1
                             lineage_record["offspring_id"] = None
                             lineage_record["failure_reason"] = rejection_reason
                             self._write_offspring_lineage_log(lineage_record)

@@ -222,7 +222,11 @@ Finally, provide the revised code, keeping the function name, inputs, and output
             raise RuntimeError("Missing required function definition.")
         if "import numpy as np" not in code:
             code = "import numpy as np\n\n" + code
-        ast.parse(code)
+        tree = ast.parse(code)
+        banned_nodes = (ast.For, ast.While, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+        for node in ast.walk(tree):
+            if isinstance(node, banned_nodes):
+                raise RuntimeError("score() must use vectorized numpy operations; Python loops/comprehensions are not allowed.")
         self._validate_runtime_contract(code)
         return code
 
@@ -242,10 +246,12 @@ Finally, provide the revised code, keeping the function name, inputs, and output
         saw_nontrivial_variation = False
         saw_length_variation = False
         for item, bins in probe_cases:
+            t0 = time.perf_counter()
             try:
                 raw = getattr(module, self.prompt_func_name)(item, bins.copy())
             except Exception as exc:
                 raise RuntimeError(f"score() execution failed on probe len={len(bins)}: {exc}") from exc
+            elapsed = time.perf_counter() - t0
             try:
                 scores = np.asarray(raw, dtype=float).reshape(-1)
             except Exception as exc:
@@ -254,6 +260,8 @@ Finally, provide the revised code, keeping the function name, inputs, and output
                 raise RuntimeError("score() must return one numeric score per feasible bin.")
             if not np.all(np.isfinite(scores)):
                 raise RuntimeError("score() output contains NaN or infinity.")
+            if len(bins) >= 5000 and elapsed > 0.02:
+                raise RuntimeError("score() is too slow on probe cases; use vectorized numpy operations.")
             if np.max(scores) > np.min(scores):
                 saw_nontrivial_variation = True
             if len(np.unique(np.round(scores, 12))) > 1:
