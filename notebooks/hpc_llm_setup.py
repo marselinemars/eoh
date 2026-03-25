@@ -2,25 +2,12 @@ import json
 import os
 import sys
 import threading
-import re
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Tuple
 
 import requests
-
-DEFAULT_HPC_BASE = "http://vllm-nodeport.vllm-ns.svc.cluster.local:8000/v1"
-DEFAULT_HPC_KEY = "my-key-ensia-2022-1030"
-DEFAULT_HPC_MODEL = "QuantTrio/Qwen3-VL-235B-A22B-Instruct-AWQ"
-DEFAULT_BRIDGE_SYSTEM_MESSAGE = (
-    "Return ONLY: (1) one short algorithm sentence in {...} and (2) valid Python code. "
-    "No reasoning, no thinking process, no markdown fences, no extra commentary."
-)
-DEFAULT_BRIDGE_JSON_SYSTEM_MESSAGE = (
-    "You are a JSON generator. Output ONLY valid JSON object matching the user schema. "
-    "No markdown, no prose, no code fences."
-)
 
 
 @dataclass
@@ -54,162 +41,46 @@ def ensure_eoh_src_on_path(start_dir: Path | None = None) -> Tuple[Path, Path]:
 
 
 def config_from_env() -> HPCBridgeConfig:
-    base_url = os.getenv("ENSIA_VLLM_BASE", DEFAULT_HPC_BASE)
-    api_key = os.getenv("ENSIA_VLLM_API_KEY", DEFAULT_HPC_KEY)
-    model = os.getenv("ENSIA_VLLM_MODEL", DEFAULT_HPC_MODEL)
+    base_url = os.getenv(
+        "ENSIA_VLLM_BASE",
+        "http://vllm-nodeport.vllm-ns.svc.cluster.local:8000/v1",
+    )
+    api_key = os.getenv("ENSIA_VLLM_API_KEY", "")
+    model = os.getenv("ENSIA_VLLM_MODEL", "auto")
     port = int(os.getenv("EOH_BRIDGE_PORT", "18000"))
     return HPCBridgeConfig(base_url=base_url, api_key=api_key, model=model, port=port)
 
 
-def _fetch_model_ids(cfg: HPCBridgeConfig, timeout_s: int = 60) -> list[str]:
-    headers = {}
-    if cfg.api_key:
-        headers["Authorization"] = f"Bearer {cfg.api_key}"
+def resolve_model_id(cfg: HPCBridgeConfig, timeout_s: int = 60) -> str:
+    if not cfg.api_key:
+        raise RuntimeError("Missing ENSIA_VLLM_API_KEY.")
+    if cfg.model != "auto":
+        return cfg.model
+
+    headers = {"Authorization": f"Bearer {cfg.api_key}"}
     resp = requests.get(f"{cfg.base_url}/models", headers=headers, timeout=timeout_s)
     if resp.status_code != 200:
         raise RuntimeError(f"/models failed: {resp.status_code} {resp.text[:300]}")
+
     payload = resp.json()
     model_ids = [m.get("id") for m in payload.get("data", []) if m.get("id")]
-    return model_ids
-
-
-def resolve_model_id(cfg: HPCBridgeConfig, timeout_s: int = 60) -> str:
-    model_ids = _fetch_model_ids(cfg, timeout_s=timeout_s)
     if not model_ids:
         raise RuntimeError("No model IDs returned by /models.")
-
-    if cfg.model == "auto":
-        return model_ids[0]
-
-    if cfg.model in model_ids:
-        return cfg.model
-
-    print(
-        f"Requested model '{cfg.model}' is unavailable. "
-        f"Falling back to available model '{model_ids[0]}'."
-    )
     return model_ids[0]
 
 
 def _make_handler(base_url: str, api_key: str, model_id: str):
-    bridge_max_tokens = int(os.getenv("EOH_BRIDGE_MAX_TOKENS", "1200"))
-    bridge_system_message = os.getenv("EOH_BRIDGE_SYSTEM_MESSAGE", DEFAULT_BRIDGE_SYSTEM_MESSAGE)
-    bridge_json_system_message = os.getenv("EOH_BRIDGE_JSON_SYSTEM_MESSAGE", DEFAULT_BRIDGE_JSON_SYSTEM_MESSAGE)
-    bridge_json_response_format = os.getenv("EOH_BRIDGE_JSON_RESPONSE_FORMAT", "1") == "1"
-    disable_thinking = os.getenv("EOH_BRIDGE_DISABLE_THINKING", "1") == "1"
-    repair_retries = int(os.getenv("EOH_BRIDGE_REPAIR_RETRIES", "1"))
-
     class BridgeHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             return
 
         def _send(self, code: int, payload: dict):
             body = json.dumps(payload).encode("utf-8")
-            try:
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            except (BrokenPipeError, ConnectionResetError):
-                # Client timed out/disconnected before response flush.
-                return
-
-        def _extract_description(self, text: str):
-            m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
-            return m.group(0).strip() if m else None
-
-        def _extract_code(self, text: str):
-            code_blocks = re.findall(r"```(?:python|py)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
-            for block in code_blocks:
-                if "def score" in block:
-                    return block.strip()
-            if code_blocks:
-                return code_blocks[0].strip()
-            m = re.search(r"(import[\s\S]*?def\s+score\s*\(.*)", text, re.DOTALL)
-            if m:
-                return m.group(1).strip()
-            m = re.search(r"(def\s+score\s*\(.*)", text, re.DOTALL)
-            if m:
-                return m.group(1).strip()
-            return None
-
-        def _looks_valid_final(self, text: str):
-            t = text or ""
-            return ("def score" in t) and ("{" in t and "}" in t)
-
-        def _sanitize_to_final(self, text: str):
-            if not isinstance(text, str):
-                return ""
-            desc = self._extract_description(text)
-            code = self._extract_code(text)
-            if code is None:
-                return text.strip()
-            parts = []
-            if desc:
-                parts.append(desc)
-            parts.append(code)
-            return "\n".join(parts).strip()
-
-        def _is_json_mode_request(self, prompt: str, params: dict):
-            mode = str(params.get("eoh_response_mode", "")).strip().lower()
-            if mode == "json":
-                return True
-            markers = [
-                "ROLE: Agent 1 - DIAGNOSER",
-                "ROLE: Agent 2 - PLANNER",
-                "ROLE: Agent 3 - CRITIC / SAFETY",
-                "Return ONLY valid JSON",
-                "\"op_probs\"",
-                "\"diagnosis_labels\"",
-            ]
-            return any(m in (prompt or "") for m in markers)
-
-        def _extract_json_object(self, text: str):
-            if not isinstance(text, str):
-                return ""
-            t = text.strip()
-            if not t:
-                return ""
-            try:
-                obj = json.loads(t)
-                if isinstance(obj, dict):
-                    return json.dumps(obj, ensure_ascii=False)
-            except Exception:
-                pass
-
-            depth = 0
-            start = None
-            in_string = False
-            escape = False
-            for i, ch in enumerate(t):
-                if in_string:
-                    if escape:
-                        escape = False
-                    elif ch == "\\":
-                        escape = True
-                    elif ch == '"':
-                        in_string = False
-                    continue
-                if ch == '"':
-                    in_string = True
-                    continue
-                if ch == "{":
-                    if depth == 0:
-                        start = i
-                    depth += 1
-                elif ch == "}":
-                    if depth > 0:
-                        depth -= 1
-                        if depth == 0 and start is not None:
-                            cand = t[start : i + 1]
-                            try:
-                                obj = json.loads(cand)
-                                if isinstance(obj, dict):
-                                    return json.dumps(obj, ensure_ascii=False)
-                            except Exception:
-                                continue
-            return t
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def do_POST(self):
             if self.path != "/completions":
@@ -221,109 +92,37 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
                 req = json.loads(self.rfile.read(length).decode("utf-8"))
                 prompt = req.get("prompt", "")
                 params = req.get("params", {}) or {}
-                temperature = params.get("temperature", 0.2)
-                if temperature is None:
-                    temperature = 0.2
-                max_new_tokens = params.get("max_new_tokens", bridge_max_tokens)
-                if max_new_tokens is None:
-                    max_new_tokens = bridge_max_tokens
-                json_mode = self._is_json_mode_request(prompt, params)
-                system_message = bridge_json_system_message if json_mode else bridge_system_message
 
                 headers = {
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 }
-                if api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
-
-                messages = [{"role": "user", "content": prompt}]
-                if system_message:
-                    messages = [
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": prompt},
-                    ]
 
                 chat_payload = {
                     "model": model_id,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_new_tokens,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": params.get("temperature", 0.2),
                 }
-                if json_mode and bridge_json_response_format:
-                    chat_payload["response_format"] = {"type": "json_object"}
-                if disable_thinking:
-                    # Some Qwen/vLLM deployments accept one of these flags.
-                    # Unknown keys are typically ignored by compliant servers.
-                    chat_payload["thinking"] = False
-                    chat_payload["chat_template_kwargs"] = {"enable_thinking": False}
-                    chat_payload["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-                r = requests.post(f"{base_url}/chat/completions", headers=headers, json=chat_payload, timeout=600)
-                if r.status_code != 200 and json_mode and "response_format" in chat_payload:
-                    # Fallback for servers that do not support response_format.
-                    chat_payload.pop("response_format", None)
-                    r = requests.post(f"{base_url}/chat/completions", headers=headers, json=chat_payload, timeout=600)
+                r = requests.post(
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json=chat_payload,
+                    timeout=600,
+                )
                 if r.status_code == 200:
                     data = r.json()
                     text = data.get("choices", [{}])[0].get("message", {}).get("content")
                     if isinstance(text, str) and text:
-                        if json_mode:
-                            text = self._extract_json_object(text)
-                            self._send(200, {"content": [text]})
-                            return
-
-                        text = self._sanitize_to_final(text)
-                        if not self._looks_valid_final(text):
-                            for _ in range(repair_retries):
-                                repair_prompt = (
-                                    "Rewrite the following draft into final output ONLY:\n"
-                                    "1) one short sentence in braces {...}\n"
-                                    "2) valid Python code defining score(item, bins) and returning scores\n"
-                                    "No reasoning text.\n\nDraft:\n"
-                                    f"{text}"
-                                )
-                                repair_payload = {
-                                    "model": model_id,
-                                    "messages": [
-                                        {"role": "system", "content": system_message},
-                                        {"role": "user", "content": repair_prompt},
-                                    ],
-                                    "temperature": 0.0,
-                                    "max_tokens": max_new_tokens,
-                                }
-                                if disable_thinking:
-                                    repair_payload["thinking"] = False
-                                    repair_payload["chat_template_kwargs"] = {"enable_thinking": False}
-                                rr = requests.post(
-                                    f"{base_url}/chat/completions",
-                                    headers=headers,
-                                    json=repair_payload,
-                                    timeout=600,
-                                )
-                                if rr.status_code == 200:
-                                    rd = rr.json()
-                                    rtext = rd.get("choices", [{}])[0].get("message", {}).get("content", "")
-                                    text = self._sanitize_to_final(rtext)
-                                    if self._looks_valid_final(text):
-                                        break
                         self._send(200, {"content": [text]})
                         return
 
                 # fallback to completion-style endpoint if chat path is unavailable
-                completion_prompt = prompt
-                if system_message:
-                    completion_prompt = (
-                        f"System: {system_message}\n\n"
-                        f"User: {prompt}\n\n"
-                        "Assistant:"
-                    )
                 comp_payload = {
                     "model": model_id,
-                    "prompt": completion_prompt,
-                    "temperature": temperature,
-                    "max_tokens": max_new_tokens,
+                    "prompt": prompt,
+                    "temperature": params.get("temperature", 0.2),
+                    "max_tokens": params.get("max_new_tokens", 512),
                 }
-                if disable_thinking:
-                    comp_payload["thinking"] = False
                 r2 = requests.post(
                     f"{base_url}/completions",
                     headers=headers,
@@ -345,10 +144,6 @@ def _make_handler(base_url: str, api_key: str, model_id: str):
 
                 data2 = r2.json()
                 text2 = data2.get("choices", [{}])[0].get("text", "")
-                if json_mode:
-                    text2 = self._extract_json_object(text2)
-                else:
-                    text2 = self._sanitize_to_final(text2)
                 self._send(200, {"content": [text2]})
             except Exception as exc:
                 self._send(500, {"error": str(exc)})

@@ -44,31 +44,6 @@ class Paras():
         #####################
         self.eva_timeout = 30
         self.eva_numba_decorator = False
-        self.eval_instances_per_gen = None
-        self.holdout_instances = 64
-        self.holdout_eval_interval = 1
-        self.eval_parallel_instances = 1
-
-        #####################
-        ###  Run mode / logging ###
-        #####################
-        self.eoh_mode = "baseline"  # baseline | routed
-        self.route_controller_enabled = True
-        self.route_controller_window = 5
-        self.route_controller_use_llm = True
-        self.route_controller_use_critic = False
-        self.route_improvement_epsilon = 1e-12
-        self.route_stagnation_k = 3
-        self.route_invalid_rate_threshold = 0.5
-        self.route_use_diversity = True
-        self.route_recent_window = 3
-        self.route_structural_plateau_eps = 1e-5
-        self.route_warmup_gens = 2
-        self.route_e1_cooldown = 3
-        self.route_e2_recent_k = 3
-        self.route_use_probabilistic = True
-        self.route_shuffle_operator_order = False
-        self.log_full_population = False
 
 
     def set_parallel(self):

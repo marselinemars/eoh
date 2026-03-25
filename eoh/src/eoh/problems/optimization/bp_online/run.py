@@ -5,45 +5,12 @@ from .prompts import GetPrompts
 import types
 import warnings
 import sys
-import os
-import concurrent.futures
 
 class BPONLINE():
-    def __init__(self, paras=None):
+    def __init__(self):
         getdate = GetData()
         self.instances, self.lb = getdate.get_instances()
         self.prompts = GetPrompts()
-        self.eval_instances_per_gen = None
-        self.holdout_instances = 64
-        self.eval_parallel_instances = 1
-        if paras is not None:
-            self.eval_instances_per_gen = getattr(paras, "eval_instances_per_gen", None)
-            self.holdout_instances = int(getattr(paras, "holdout_instances", 64))
-            self.eval_parallel_instances = max(1, int(getattr(paras, "eval_parallel_instances", 1)))
-
-    def _select_train_instances(self, dataset_items):
-        if self.eval_instances_per_gen is None:
-            return dataset_items
-        try:
-            cap = int(self.eval_instances_per_gen)
-        except (TypeError, ValueError):
-            return dataset_items
-        if cap <= 0:
-            return dataset_items
-        return dataset_items[:cap]
-
-    def _select_holdout_instances(self, dataset_items):
-        try:
-            k = int(self.holdout_instances)
-        except (TypeError, ValueError):
-            k = 64
-        if k <= 0:
-            return []
-
-        train_items = self._select_train_instances(dataset_items)
-        start = len(train_items)
-        holdout_items = dataset_items[start:start + k]
-        return holdout_items
 
     def get_valid_bin_indices(self,item: float, bins: np.ndarray) -> np.ndarray:
         """Returns indices of bins in which item can fit."""
@@ -71,55 +38,49 @@ class BPONLINE():
         packing = [bin_items for bin_items in packing if bin_items]
         return packing, bins
 
-    def _evaluate_dataset(self, dataset_items, alg, lb_value):
-        def _eval_one(instance):
-            capacity = instance['capacity']
-            items = np.array(instance['items'])
-            bins = np.array([capacity for _ in range(instance['num_items'])])
-            _, bins_packed = self.online_binpack(items, bins, alg)
-            return (bins_packed != capacity).sum()
-
-        num_bins_list = []
-        instances = [instance for _, instance in dataset_items]
-        if self.eval_parallel_instances > 1 and len(instances) > 1:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.eval_parallel_instances) as executor:
-                for num_bins in executor.map(_eval_one, instances):
-                    num_bins_list.append(-num_bins)
-        else:
-            for instance in instances:
-                num_bins = _eval_one(instance)
-                num_bins_list.append(-num_bins)
-
-        if len(num_bins_list) == 0:
-            return None
-
-        avg_num_bins = -np.mean(np.array(num_bins_list))
-        fitness = (avg_num_bins - lb_value) / lb_value
-        return float(fitness)
-
 
     # @funsearch.run
-    def evaluateGreedy(self, alg, split="train") -> float:
+    def evaluateGreedy(self,alg) -> float:
         # algorithm_module = importlib.import_module("ael_alg")
         # alg = importlib.reload(algorithm_module)  
         """Evaluate heuristic function on a set of online binpacking instances."""
-        fitness_values = []
+        # List storing number of bins used for each instance.
+        #num_bins = []
+        # Perform online binpacking for each instance.
+        # for name in instances:
+        #     #print(name)
+
         for name, dataset in self.instances.items():
-            dataset_items = list(dataset.items())
-            if split == "train":
-                selected_items = self._select_train_instances(dataset_items)
-            elif split == "holdout":
-                selected_items = self._select_holdout_instances(dataset_items)
-            else:
-                selected_items = dataset_items
+            num_bins_list = []
+            for _, instance in dataset.items():
 
-            dataset_fitness = self._evaluate_dataset(selected_items, alg, self.lb[name])
-            if dataset_fitness is not None:
-                fitness_values.append(dataset_fitness)
+                capacity = instance['capacity']
+                items = np.array(instance['items'])
 
-        if len(fitness_values) == 0:
-            return None
-        return float(np.mean(np.array(fitness_values)))
+                # items = items/capacity
+                # capacity = 1.0
+
+                # Create num_items bins so there will always be space for all items,
+                # regardless of packing order. Array has shape (num_items,).
+                bins = np.array([capacity for _ in range(instance['num_items'])])
+                # Pack items into bins and return remaining capacity in bins_packed, which
+                # has shape (num_items,).
+                _, bins_packed = self.online_binpack(items, bins, alg)
+                # If remaining capacity in a bin is equal to initial capacity, then it is
+                # unused. Count number of used bins.
+                num_bins = (bins_packed != capacity).sum()
+
+                num_bins_list.append(-num_bins)
+
+            # avg_num_bins = -self.evaluateGreedy(dataset, algorithm)
+            avg_num_bins = -np.mean(np.array(num_bins_list))
+            fitness = (avg_num_bins - self.lb[name]) / self.lb[name]
+
+
+        # Score of heuristic function is negative of average number of bins used
+        # across instances (as we want to minimize number of bins).
+
+        return fitness
 
 
 
@@ -141,7 +102,7 @@ class BPONLINE():
     #         #print("Error:", str(e))  # Print the error message
     #         return None
         
-    def evaluate_on_split(self, code_string, split="train"):
+    def evaluate(self, code_string):
         try:
             # Suppress warnings
             with warnings.catch_warnings():
@@ -156,16 +117,12 @@ class BPONLINE():
                 # Add the module to sys.modules so it can be imported
                 sys.modules[heuristic_module.__name__] = heuristic_module
 
-                fitness = self.evaluateGreedy(heuristic_module, split=split)
+                fitness = self.evaluateGreedy(heuristic_module)
 
                 return fitness
         except Exception as e:
-            if os.getenv("EOH_VERBOSE_EVAL_ERRORS", "1") == "1":
-                print(f"BP evaluate error: {e}")
+            #print("Error:", str(e))
             return None
-
-    def evaluate(self, code_string):
-        return self.evaluate_on_split(code_string, split="train")
 
 
 
